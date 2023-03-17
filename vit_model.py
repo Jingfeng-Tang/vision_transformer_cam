@@ -281,6 +281,7 @@ class VisionTransformer(nn.Module):
         x = self.blocks(x)                  # 进入transformer block  此时x 8*197*768
         # 8*197*768
         x = self.norm(x)
+        # -------------------------------------------------------------------------------------------------
         # 获得cam 测试
         patch_tokens = x[:, 1:]         # get patch_tokens
         # print(f'patch_tokens.shape: {patch_tokens.shape}')      # 8*196*768
@@ -301,6 +302,7 @@ class VisionTransformer(nn.Module):
         cams = torch.einsum('ijk,kl->ijl', patch_tokens, cls_weight_test)
         # cam = F.conv2d(patch_tokens_test, cls_weight_test).detach()  # 8*768*14*14  cls.weight:
         # print(f'cams.shape: {cams.shape}')
+        # -------------------------------------------------------------------------------------------------
         if self.dist_token is None:
             return self.pre_logits(x[:, 0]), cams
         else:

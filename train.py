@@ -8,41 +8,62 @@ import torch.optim.lr_scheduler as lr_scheduler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 
-
 from my_dataset import MyDataSet
 from vit_model import vit_base_patch16_224_in21k as create_model
-from utils import read_split_data, train_one_epoch, evaluate
+from utils import train_one_epoch, evaluate
+from voc12.data import VOC12ClsDataset
+import datetime
+import random
 
 
 def main(args):
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
+    # 创建模型权重保存文件夹
     if os.path.exists("./weights") is False:
         os.makedirs("./weights")
 
+    # 创建原始CAM保存文件夹
+    if os.path.exists("./origincams") is False:
+        os.makedirs("./origincams")
+
     tb_writer = SummaryWriter()
 
-    train_images_path, train_images_label, val_images_path, val_images_label = read_split_data(args.data_path)
+    # train_images_path, train_images_label, val_images_path, val_images_label = read_split_data(args.data_path)
 
+    # data_transform = {
+    #     "train": transforms.Compose([transforms.RandomResizedCrop(224),
+    #                                  transforms.RandomHorizontalFlip(),
+    #                                  transforms.ToTensor(),
+    #                                  transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])]),
+    #     "val": transforms.Compose([transforms.Resize(256),
+    #                                transforms.CenterCrop(224),
+    #                                transforms.ToTensor(),
+    #                                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])}
+
+    # 遵循SEAM数据增强操作  目前这样数据增强只是为了可视化，使得cam图map到原图的相应位置
     data_transform = {
-        "train": transforms.Compose([transforms.RandomResizedCrop(224),
-                                     transforms.RandomHorizontalFlip(),
+        "train": transforms.Compose([transforms.Resize([224, 224]),
                                      transforms.ToTensor(),
-                                     transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])]),
-        "val": transforms.Compose([transforms.Resize(256),
-                                   transforms.CenterCrop(224),
+                                     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])]),
+        "val": transforms.Compose([transforms.Resize([224, 224]),
                                    transforms.ToTensor(),
-                                   transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])}
+                                   transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])}
+
+    # # 实例化训练数据集
+    # train_dataset = MyDataSet(images_path=train_images_path,
+    #                           images_class=train_images_label,
+    #                           transform=data_transform["train"])
+    #
+    # # 实例化验证数据集
+    # val_dataset = MyDataSet(images_path=val_images_path,
+    #                         images_class=val_images_label,
+    #                         transform=data_transform["val"])
 
     # 实例化训练数据集
-    train_dataset = MyDataSet(images_path=train_images_path,
-                              images_class=train_images_label,
-                              transform=data_transform["train"])
-
-    # 实例化验证数据集
-    val_dataset = MyDataSet(images_path=val_images_path,
-                            images_class=val_images_label,
-                            transform=data_transform["val"])
+    train_dataset = VOC12ClsDataset(img_name_list_path=args.img_name_path,
+                                    voc12_root=args.dataset_path,
+                                    transform=data_transform["train"])
 
     batch_size = args.batch_size
     nw = min([os.cpu_count(), batch_size if batch_size > 1 else 0, 8])  # number of workers
@@ -52,16 +73,16 @@ def main(args):
                                                shuffle=True,
                                                pin_memory=True,
                                                num_workers=nw,
-                                               collate_fn=train_dataset.collate_fn)
+                                               )
 
-    val_loader = torch.utils.data.DataLoader(val_dataset,
-                                             batch_size=batch_size,
-                                             shuffle=False,
-                                             pin_memory=True,
-                                             num_workers=nw,
-                                             collate_fn=val_dataset.collate_fn)
+    # val_loader = torch.utils.data.DataLoader(val_dataset,
+    #                                          batch_size=batch_size,
+    #                                          shuffle=False,
+    #                                          pin_memory=True,
+    #                                          num_workers=nw,
+    #                                          collate_fn=val_dataset.collate_fn)
 
-    model = create_model(num_classes=5, has_logits=False).to(device)
+    model = create_model(num_classes=20, has_logits=False).to(device)
 
     if args.weights != "":
         assert os.path.exists(args.weights), "weights file: '{}' not exist.".format(args.weights)
@@ -87,55 +108,68 @@ def main(args):
     lf = lambda x: ((1 + math.cos(x * math.pi / args.epochs)) / 2) * (1 - args.lrf) + args.lrf  # cosine
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
 
+    min_train_loss = 100000.0
+    date = datetime.date.today()
+    print((str(date)))
     for epoch in range(args.epochs):
         # train
-        train_loss, train_acc = train_one_epoch(model=model,
-                                                optimizer=optimizer,
-                                                data_loader=train_loader,
-                                                device=device,
-                                                epoch=epoch)
+        train_loss, f1_score = train_one_epoch(model=model,
+                                               optimizer=optimizer,
+                                               data_loader=train_loader,
+                                               device=device,
+                                               epoch=epoch)
 
         scheduler.step()
 
-        # validate
-        val_loss, val_acc = evaluate(model=model,
-                                     data_loader=val_loader,
-                                     device=device,
-                                     epoch=epoch)
+        # 先跑起来，暂时不验证
+        # # validate
+        # val_loss, val_acc = evaluate(model=model,
+        #                              data_loader=val_loader,
+        #                              device=device,
+        #                              epoch=epoch)
 
-        tags = ["train_loss", "train_acc", "val_loss", "val_acc", "learning_rate"]
+        tags = ["train_loss", "f1_score", "learning_rate", "val_acc", "learning_rate"]
         tb_writer.add_scalar(tags[0], train_loss, epoch)
-        tb_writer.add_scalar(tags[1], train_acc, epoch)
-        tb_writer.add_scalar(tags[2], val_loss, epoch)
-        tb_writer.add_scalar(tags[3], val_acc, epoch)
-        tb_writer.add_scalar(tags[4], optimizer.param_groups[0]["lr"], epoch)
+        tb_writer.add_scalar(tags[1], f1_score, epoch)
+        # tb_writer.add_scalar(tags[2], val_loss, epoch)
+        # tb_writer.add_scalar(tags[3], val_acc, epoch)
+        tb_writer.add_scalar(tags[2], optimizer.param_groups[0]["lr"], epoch)
+        if train_loss < min_train_loss:
+            torch.save(model.state_dict(), "./weights/{}-cur_ep{}-bestloss.pth".format(str(date), epoch))
+            min_train_loss = train_loss
+    torch.save(model.state_dict(), "./weights/{}-cur_ep{}-final.pth".format(str(date), epoch))
 
-        torch.save(model.state_dict(), "./weights/model-{}.pth".format(epoch))
 
+# def get_args(args):
+#     return args
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_classes', type=int, default=5)
-    parser.add_argument('--epochs', type=int, default=10)
-    parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--epochs', type=int, default=500)
+    parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--lrf', type=float, default=0.01)
-
-    # 数据集所在根目录
-    # https://storage.googleapis.com/download.tensorflow.org/example_images/flower_photos.tgz
-    parser.add_argument('--data-path', type=str,
-                        default="../datasets/flower_photos")
-    parser.add_argument('--model-name', default='', help='create model name')
+    parser.add_argument('--dataset_path', type=str,
+                        default="/data/c425/tjf/datasets/VOC2012/")
+    parser.add_argument('--img_name_path', type=str,
+                        default="/data/c425/tjf/vit/voc12/train.txt")
+    parser.add_argument('--ori_cam_path', type=str,
+                        default="/data/c425/tjf/vit/origincams/")
+    parser.add_argument('--model-name', default='vit_base', help='create model name')
 
     # 预训练权重路径，如果不想载入就设置为空字符
-    # parser.add_argument('--weights', type=str, default='./jx_vit_base_p16_224-80ecf9dd.pth',
-    #                     help='initial weights path')
-    parser.add_argument('--weights', type=str, default='./jx_vit_base_patch16_224_in21k-e5005f0a.pth',
+    parser.add_argument('--weights', type=str, default='',
                         help='initial weights path')
+    # parser.add_argument('--weights', type=str, default='./jx_vit_base_patch16_224_in21k-e5005f0a.pth',
+    #                     help='initial weights path')
+    # parser.add_argument('--weights', type=str, default='./model-499.pth',
+    #                     help='initial weights path')
     # 是否冻结权重
-    parser.add_argument('--freeze-layers', type=bool, default=True)
+    parser.add_argument('--freeze-layers', type=bool, default=False)
     parser.add_argument('--device', default='cuda:0', help='device id (i.e. 0 or 0,1 or cpu)')
 
     opt = parser.parse_args()
-
+    random.seed(0)  # 保证随机结果可复现
+    # get_args(opt)
     main(opt)

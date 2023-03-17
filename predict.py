@@ -9,7 +9,13 @@ import matplotlib.pyplot as plt
 from vit_model import vit_base_patch16_224_in21k as create_model
 import numpy as np
 import cv2
+from voc12.data import load_image_label_list_from_npy, load_img_name_list
 
+
+name_list = load_img_name_list("/data/c425/tjf/vit/voc12/train.txt")
+labels = load_image_label_list_from_npy(name_list)
+
+# predict  单张图片预测
 def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(device)
@@ -17,7 +23,7 @@ def main():
         [transforms.Resize([224, 224]),
          # transforms.CenterCrop(224),
          transforms.ToTensor(),
-         transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])
+         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
 
     data_transform_showimg = transforms.Compose(
         [transforms.Resize([224, 224]),
@@ -28,10 +34,10 @@ def main():
     # load image
     # img_path = "/data/c425/tjf/datasets/flower_photos/tulips/16907559551_05ded87fb2_n.jpg"
     # img_path = "/data/c425/tjf/datasets/flower_photos/sunflowers/4933822272_79af205b94.jpg"
-    img_path = "/data/c425/tjf/datasets/flower_photos/daisy/3445110406_0c1616d2e3_n.jpg"
+    # img_path = "/data/c425/tjf/datasets/flower_photos/daisy/3445110406_0c1616d2e3_n.jpg"
     # img_path = "/data/c425/tjf/datasets/flower_photos/dandelion/10200780773_c6051a7d71_n.jpg"
     # img_path = "/data/c425/tjf/datasets/flower_photos/roses/14176042519_5792b37555.jpg"
-    # img_path = "./rose.jpg"
+    img_path = "/data/c425/tjf/datasets/VOC2012/JPEGImages/2007_000250.jpg"
     assert os.path.exists(img_path), "file: '{}' dose not exist.".format(img_path)
     imgo = Image.open(img_path)
     plt.imshow(imgo)
@@ -50,12 +56,15 @@ def main():
 
     with open(json_path, "r") as f:
         class_indict = json.load(f)
+    # print(f'cls_indict:{class_indict}')
 
     # create model
-    model = create_model(num_classes=5, has_logits=False).to(device)
+    model = create_model(num_classes=20, has_logits=False).to(device)
     # load model weights
-    model_weight_path = "./weights/model-9.pth"
+    model_weight_path = "./weights/model-499.pth"
     model.load_state_dict(torch.load(model_weight_path, map_location=device))
+    # load label
+
     model.eval()
     # 获取模型的参数
     # print(model)
@@ -70,7 +79,7 @@ def main():
         output = torch.squeeze(output).cpu()
         predict = torch.softmax(output, dim=0)
         predict_cla = torch.argmax(predict).numpy()
-        cams = cams.squeeze(0).reshape(14, 14, 5).permute(2, 0, 1)
+        cams = cams.squeeze(0).reshape(14, 14, 20).permute(2, 0, 1)
         cam = cams[predict_cla]
         cam = cam.cpu()
         cam = np.array(cam)
@@ -86,12 +95,25 @@ def main():
         result = heatmap * 0.3 + img * 0.5
         cv2.imwrite('CAM.jpg', result)
 
-    print_res = "class: {}   prob: {:.3}".format(class_indict[str(predict_cla)],
-                                                 predict[predict_cla].numpy())
-    plt.title(print_res)
-    for i in range(len(predict)):
-        print("class: {:10}   prob: {:.3}".format(class_indict[str(i)],
-                                                  predict[i].numpy()))
+    str_label = 'GT labels: '
+    for i in range(labels[8].shape[0]):
+        if labels[8][i] == 1:
+            str_label = str_label + class_indict[str(i)] + ' '
+    plt.text(10, 10, str_label, fontsize=10, color='green')
+
+    str_pred = ''
+    labels_sum = labels[8].sum()
+    labels_sum = labels_sum.item()
+    labels_sum = int(labels_sum)
+
+    val, index = torch.topk(predict, labels_sum, dim=0)
+    for i in range(labels_sum):
+        str_pred = "{}:{:.3}".format(class_indict[str(index[i].item())],
+                                                  val[i]) + str_pred + ' '
+    plt.title(str_pred)
+    # for i in range(len(predict)):
+    #     print("class: {:10}   prob: {:.3}".format(class_indict[str(i)],
+    #                                               predict[i].numpy()))
     plt.show()
 
 

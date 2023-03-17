@@ -3,106 +3,15 @@ import sys
 import json
 import pickle
 import random
-
 import torch
 from tqdm import tqdm
-
 import matplotlib.pyplot as plt
+import sklearn.metrics as metrics
+import numpy as np
+import cv2
 
-
-def read_split_data(root: str, val_rate: float = 0.2):
-    random.seed(0)  # 保证随机结果可复现
-    print(root)
-    assert os.path.exists(root), "dataset root: {} does not exist.".format(root)
-
-    # 遍历文件夹，一个文件夹对应一个类别
-    flower_class = [cla for cla in os.listdir(root) if os.path.isdir(os.path.join(root, cla))]
-    # 排序，保证各平台顺序一致
-    flower_class.sort()
-    # 生成类别名称以及对应的数字索引
-    class_indices = dict((k, v) for v, k in enumerate(flower_class))
-    json_str = json.dumps(dict((val, key) for key, val in class_indices.items()), indent=4)
-    with open('class_indices.json', 'w') as json_file:
-        json_file.write(json_str)
-
-    train_images_path = []  # 存储训练集的所有图片路径
-    train_images_label = []  # 存储训练集图片对应索引信息
-    val_images_path = []  # 存储验证集的所有图片路径
-    val_images_label = []  # 存储验证集图片对应索引信息
-    every_class_num = []  # 存储每个类别的样本总数
-    supported = [".jpg", ".JPG", ".png", ".PNG"]  # 支持的文件后缀类型
-    # 遍历每个文件夹下的文件
-    for cla in flower_class:
-        cla_path = os.path.join(root, cla)
-        # 遍历获取supported支持的所有文件路径
-        images = [os.path.join(root, cla, i) for i in os.listdir(cla_path)
-                  if os.path.splitext(i)[-1] in supported]
-        # 排序，保证各平台顺序一致
-        images.sort()
-        # 获取该类别对应的索引
-        image_class = class_indices[cla]
-        # 记录该类别的样本数量
-        every_class_num.append(len(images))
-        # 按比例随机采样验证样本
-        val_path = random.sample(images, k=int(len(images) * val_rate))
-
-        for img_path in images:
-            if img_path in val_path:  # 如果该路径在采样的验证集样本中则存入验证集
-                val_images_path.append(img_path)
-                val_images_label.append(image_class)
-            else:  # 否则存入训练集
-                train_images_path.append(img_path)
-                train_images_label.append(image_class)
-
-    print("{} images were found in the dataset.".format(sum(every_class_num)))
-    print("{} images for training.".format(len(train_images_path)))
-    print("{} images for validation.".format(len(val_images_path)))
-    assert len(train_images_path) > 0, "number of training images must greater than 0."
-    assert len(val_images_path) > 0, "number of validation images must greater than 0."
-
-    plot_image = False
-    if plot_image:
-        # 绘制每种类别个数柱状图
-        plt.bar(range(len(flower_class)), every_class_num, align='center')
-        # 将横坐标0,1,2,3,4替换为相应的类别名称
-        plt.xticks(range(len(flower_class)), flower_class)
-        # 在柱状图上添加数值标签
-        for i, v in enumerate(every_class_num):
-            plt.text(x=i, y=v + 5, s=str(v), ha='center')
-        # 设置x坐标
-        plt.xlabel('image class')
-        # 设置y坐标
-        plt.ylabel('number of images')
-        # 设置柱状图的标题
-        plt.title('flower class distribution')
-        plt.show()
-
-    return train_images_path, train_images_label, val_images_path, val_images_label
-
-
-def plot_data_loader_image(data_loader):
-    batch_size = data_loader.batch_size
-    plot_num = min(batch_size, 4)
-
-    json_path = './class_indices.json'
-    assert os.path.exists(json_path), json_path + " does not exist."
-    json_file = open(json_path, 'r')
-    class_indices = json.load(json_file)
-
-    for data in data_loader:
-        images, labels = data
-        for i in range(plot_num):
-            # [C, H, W] -> [H, W, C]
-            img = images[i].numpy().transpose(1, 2, 0)
-            # 反Normalize操作
-            img = (img * [0.229, 0.224, 0.225] + [0.485, 0.456, 0.406]) * 255
-            label = labels[i].item()
-            plt.subplot(1, plot_num, i+1)
-            plt.xlabel(class_indices[str(label)])
-            plt.xticks([])  # 去掉x轴的刻度
-            plt.yticks([])  # 去掉y轴的刻度
-            plt.imshow(img.astype('uint8'))
-        plt.show()
+def multilabel_score(y_true, y_pred):
+    return metrics.f1_score(y_true, y_pred)
 
 
 def write_pickle(list_info: list, file_name: str):
@@ -116,30 +25,96 @@ def read_pickle(file_name: str) -> list:
         return info_list
 
 
+def cam_norm(cam):
+    cam = cam.detach().cpu()
+    cam = np.array(cam)
+    # 归一化
+    cam = cam - np.min(cam)  # 减去最小，除以最大，目的是归一化
+    cam_img = cam / np.max(cam)
+    cam_img = np.uint8(255 * cam_img)
+
+    return cam_img
+
+
+def generate_origin_cam(cams, labels, names):
+    # print(names[0])
+    # args = get_args()
+    # print(f'cams.shape: {cams.shape}')
+    # print(f'labels.shape: {labels.shape}')
+    cams = cams.permute(0, 2, 1).reshape(32, 20, 14, 14)        # labels 32*20
+    cam_savepth = '/data/c425/tjf/vit/origincams/'
+    # print(f'cams.shape: {cams.shape}')
+    # 按照labels取cams
+    for i in range(32):
+        val, index = torch.topk(labels[i], int(labels[i].sum().item()), dim=0)
+        # 每张图
+        # base_cam = torch.zeros(14, 14)
+        cam_percls = []
+        img_path = '/data/c425/tjf/datasets/VOC2012/JPEGImages/'
+        img_name = names[i] + '.jpg'
+        for j in range(index.shape[0]):
+            # 按 int(index[j])
+            cam_percls.append(cams[i][int(index[j])])
+            # 存一下每张图的label类别激活映射图
+            cam_norm_i = cam_norm(cams[i][int(index[j])])
+            img_i = cv2.imread(img_path + img_name)
+            height, width, _ = img_i.shape
+            heatmap = cv2.applyColorMap(cv2.resize(cam_norm_i, (width, height)), cv2.COLORMAP_JET)
+            result = heatmap * 0.3 + img_i * 0.5
+            siglabel_cam_name = names[i] + '_siglabel_cam.jpg'
+            cv2.imwrite(cam_savepth+siglabel_cam_name, result)
+
+        base_cam = torch.stack(cam_percls, dim=0)
+        # print(base_cam)
+        label_cls_cam, _ = base_cam.max(dim=0)
+        # print('----------------')
+        # print(label_cls_cam.shape)
+        cam_normed = cam_norm(label_cls_cam)
+        img = cv2.imread(img_path+img_name)
+        height, width, _ = img.shape
+        heatmap = cv2.applyColorMap(cv2.resize(cam_normed, (width, height)), cv2.COLORMAP_JET)
+        result = heatmap * 0.3 + img * 0.5
+        syn_cam_name = names[i]+'_syn_cam.jpg'
+        cv2.imwrite(cam_savepth+syn_cam_name, result)
+
 def train_one_epoch(model, optimizer, data_loader, device, epoch):
     model.train()
-    loss_function = torch.nn.CrossEntropyLoss()
+    loss_function = torch.nn.MultiLabelSoftMarginLoss()
     accu_loss = torch.zeros(1).to(device)  # 累计损失
-    accu_num = torch.zeros(1).to(device)   # 累计预测正确的样本数
     optimizer.zero_grad()
 
     sample_num = 0
     data_loader = tqdm(data_loader, file=sys.stdout)
     for step, data in enumerate(data_loader):
-        images, labels = data
+        names, images, labels = data
         sample_num += images.shape[0]
-
         pred, cams = model(images.to(device))
-        pred_classes = torch.max(pred, dim=1)[1]
-        accu_num += torch.eq(pred_classes, labels.to(device)).sum()
+        if epoch > 495:
+            generate_origin_cam(cams, labels, names)
+        # a = torch.zeros(1)
+        # b = a[10]
+        # generate origin cams
+        labels_sum = labels.sum(dim=1)  # 每个图中有几个类别
+        pred_multihot = torch.zeros(pred.shape)  # pred all zero tensor
+        for i in range(labels_sum.shape[0]):
+            val, index = torch.topk(pred, labels_sum[i].int(), dim=1)
+            for j in range(labels_sum[i].int()):
+                pred_multihot[i][index[i][j]] = 1
+        pred_multihot_np = pred_multihot.numpy()
+        labels_np = labels.numpy()
+        f1_score_i = 0.0
+        for k in range(labels_sum.shape[0]):
+            f1_score_i = multilabel_score(labels_np[k], pred_multihot_np[k])
+            f1_score_i += f1_score_i
+        f1_score = f1_score_i/labels_sum.shape[0]
 
         loss = loss_function(pred, labels.to(device))
         loss.backward()
         accu_loss += loss.detach()
 
-        data_loader.desc = "[train epoch {}] loss: {:.3f}, acc: {:.3f}".format(epoch,
-                                                                               accu_loss.item() / (step + 1),
-                                                                               accu_num.item() / sample_num)
+        data_loader.desc = "[train epoch {}] loss: {:.3f}, f1_score: {:.3f}".format(epoch,
+                                                                                    accu_loss.item() / (step + 1),
+                                                                                    f1_score)
 
         if not torch.isfinite(loss):
             print('WARNING: non-finite loss, ending training ', loss)
@@ -148,7 +123,7 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
         optimizer.step()
         optimizer.zero_grad()
 
-    return accu_loss.item() / (step + 1), accu_num.item() / sample_num
+    return accu_loss.item() / (step + 1), f1_score
 
 
 @torch.no_grad()
@@ -157,7 +132,7 @@ def evaluate(model, data_loader, device, epoch):
 
     model.eval()
 
-    accu_num = torch.zeros(1).to(device)   # 累计预测正确的样本数
+    accu_num = torch.zeros(1).to(device)  # 累计预测正确的样本数
     accu_loss = torch.zeros(1).to(device)  # 累计损失
 
     sample_num = 0
