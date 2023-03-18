@@ -1,19 +1,28 @@
 import os
 import math
 import argparse
-
 import torch
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
-
-from my_dataset import MyDataSet
 from vit_model import vit_base_patch16_224_in21k as create_model
 from utils import train_one_epoch, evaluate
 from voc12.data import VOC12ClsDataset
 import datetime
 import random
+import numpy as np
+
+
+def same_seeds(seed):
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
 
 
 def main(args):
@@ -26,6 +35,9 @@ def main(args):
     # 创建原始CAM保存文件夹
     if os.path.exists("./origincams") is False:
         os.makedirs("./origincams")
+
+    # 用来保存训练以及验证过程中信息
+    training_log_txt = "training_log_{}.txt".format(datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 
     tb_writer = SummaryWriter()
 
@@ -101,20 +113,32 @@ def main(args):
                                                device=device,
                                                epoch=epoch)
         # validate
-        evaluate(model=model, data_loader=val_loader, device=device, epoch=epoch, num_classes=20)
-        # print(str(confmat))
+        mAP = evaluate(model=model, data_loader=val_loader, device=device, epoch=epoch, num_classes=20)
 
         scheduler.step()
 
-        tags = ["train_loss", "f1_score", "learning_rate", "val_acc", "learning_rate"]
+        tags = ["train_loss", "f1_score", "mAP", "learning_rate"]
         tb_writer.add_scalar(tags[0], train_loss, epoch)
         tb_writer.add_scalar(tags[1], f1_score, epoch)
-        # tb_writer.add_scalar(tags[2], val_loss, epoch)
-        # tb_writer.add_scalar(tags[3], val_acc, epoch)
-        tb_writer.add_scalar(tags[2], optimizer.param_groups[0]["lr"], epoch)
+        tb_writer.add_scalar(tags[2], mAP, epoch)
+        tb_writer.add_scalar(tags[3], optimizer.param_groups[0]["lr"], epoch)
+
+        # write into txt
+        with open(training_log_txt, "a") as f:
+            # 记录每个epoch对应的train_loss、lr以及验证集各指标
+            train_and_validate_log = f"[epoch: {epoch}]\n" \
+                                     f"train_loss: {train_loss:.3f}     " \
+                                     f"f1_score: {f1_score:.5f}     " \
+                                     f"mAP: {mAP:.5f}     " \
+                                     f"lr: {optimizer.param_groups[0]['lr']:.6f}\n"
+            f.write(train_and_validate_log + "\n\n")
+
+        # 保存最佳loss时权重
         if train_loss < min_train_loss:
             torch.save(model.state_dict(), "./weights/{}-cur_ep{}-bestloss.pth".format(str(date), epoch))
             min_train_loss = train_loss
+
+    # 保存最终epoch时权重
     torch.save(model.state_dict(), "./weights/{}-cur_ep{}-final.pth".format(str(date), epoch))
 
 
@@ -147,5 +171,5 @@ if __name__ == '__main__':
     parser.add_argument('--device', default='cuda:0', help='device id (i.e. 0 or 0,1 or cpu)')
 
     opt = parser.parse_args()
-    random.seed(0)  # 保证随机结果可复现
+    same_seeds(0)
     main(opt)

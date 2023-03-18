@@ -200,8 +200,10 @@ def evaluate(model, data_loader, device, epoch, num_classes):
             # print(f'target.shape: {target.shape}\n')
             mAP_list = compute_mAP(target, output)
             mAP = mAP + mAP_list
-            data_loader.desc = "[validate epoch {}] mAP: {:.3f}".format(epoch, np.mean(mAP_list))
+            mean_ap = np.mean(mAP_list)
+            data_loader.desc = "[validate epoch {}] mAP: {:.3f}".format(epoch, mean_ap)
 
+    return mean_ap
 
 def compute_mAP(labels, outputs):
     y_true = labels.cpu().numpy()

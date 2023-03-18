@@ -1,22 +1,26 @@
 import os
 import json
-
 import torch
 from PIL import Image
 from torchvision import transforms
 import matplotlib.pyplot as plt
-
 from vit_model import vit_base_patch16_224_in21k as create_model
 import numpy as np
 import cv2
 from voc12.data import load_image_label_list_from_npy, load_img_name_list
 import torch.nn.functional as F
+from voc12.data import load_image_label_from_xml
 torch.set_printoptions(threshold=np.inf)
 
 
 name_list = load_img_name_list("/data/c425/tjf/vit/voc12/train.txt")
 labels = load_image_label_list_from_npy(name_list)
-
+CAT_LIST = ['aeroplane', 'bicycle', 'bird', 'boat',
+            'bottle', 'bus', 'car', 'cat', 'chair',
+            'cow', 'diningtable', 'dog', 'horse',
+            'motorbike', 'person', 'pottedplant',
+            'sheep', 'sofa', 'train',
+            'tvmonitor']
 
 def bitget(byteval, idx):
     return (byteval & 1 << idx) != 0  # 判断输入字节的idx比特位上是否为1
@@ -55,7 +59,8 @@ def main():
        )
 
     # load image
-    img_path = "/data/c425/tjf/datasets/VOC2012/JPEGImages/2007_000491.jpg"
+    img_name = '2007_000925'
+    img_path = '/data/c425/tjf/datasets/VOC2012/JPEGImages/'+img_name+'.jpg'
     assert os.path.exists(img_path), "file: '{}' dose not exist.".format(img_path)
     imgo = Image.open(img_path)
     plt.imshow(imgo)
@@ -91,7 +96,7 @@ def main():
     # create model
     model = create_model(num_classes=20, has_logits=False).to(device)
     # load model weights
-    model_weight_path = "./weights/2023-03-17-cur_ep485-bestloss.pth"
+    model_weight_path = "./weights/2023-03-18-cur_ep200-bestloss.pth"
     model.load_state_dict(torch.load(model_weight_path, map_location=device))
     # load label
 
@@ -140,8 +145,8 @@ def main():
         # plattle
         pseudo_res = pseudo_res.squeeze(0)
         pseudo_res = pseudo_res.squeeze(0)
-        pseudo_res = torch.tensor(pseudo_res, dtype=torch.uint8)
-        print(pseudo_res.dtype)
+        pseudo_res = torch.as_tensor(pseudo_res, dtype=torch.uint8)
+
         # pseudo_res_np = pseudo_res.cpu().detach().numpy()
         toimg = transforms.ToPILImage()
         mask = toimg(pseudo_res)
@@ -155,25 +160,26 @@ def main():
         result = heatmap * 0.3 + img * 0.5
         cv2.imwrite('CAM.jpg', result)
 
+    label_name = load_image_label_from_xml(img_name, '/data/c425/tjf/datasets/VOC2012/')
+
     str_label = 'GT labels: '
-    for i in range(labels[8].shape[0]):
-        if labels[8][i] == 1:
-            str_label = str_label + class_indict[str(i)] + ' '
+    label_num_count = 0
+    for i in range(label_name.shape[0]):
+        if label_name[i] == 1:
+            str_label = str_label + CAT_LIST[i] + ' '
+            label_num_count += 1
     plt.text(10, 10, str_label, fontsize=10, color='green')
 
     str_pred = ''
-    labels_sum = labels[8].sum()
-    labels_sum = labels_sum.item()
-    labels_sum = int(labels_sum)
 
-    val, index = torch.topk(predict, labels_sum, dim=0)
-    for i in range(labels_sum):
+    val, index = torch.topk(predict, label_num_count, dim=0)
+    for i in range(label_num_count):
         str_pred = "{}:{:.3}".format(class_indict[str(index[i].item())],
-                                                  val[i]) + str_pred + ' '
+                                     val[i]) + str_pred + ' '
     plt.title(str_pred)
-    # for i in range(len(predict)):
-    #     print("class: {:10}   prob: {:.3}".format(class_indict[str(i)],
-    #                                               predict[i].numpy()))
+    for i in range(len(predict)):
+        print("class: {:10}   prob: {:.3}".format(class_indict[str(i)],
+                                                  predict[i].numpy()))
     plt.show()
 
 
