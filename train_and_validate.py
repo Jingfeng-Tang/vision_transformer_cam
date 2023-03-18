@@ -29,18 +29,6 @@ def main(args):
 
     tb_writer = SummaryWriter()
 
-    # train_images_path, train_images_label, val_images_path, val_images_label = read_split_data(args.data_path)
-
-    # data_transform = {
-    #     "train": transforms.Compose([transforms.RandomResizedCrop(224),
-    #                                  transforms.RandomHorizontalFlip(),
-    #                                  transforms.ToTensor(),
-    #                                  transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])]),
-    #     "val": transforms.Compose([transforms.Resize(256),
-    #                                transforms.CenterCrop(224),
-    #                                transforms.ToTensor(),
-    #                                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])}
-
     # 遵循SEAM数据增强操作  目前这样数据增强只是为了可视化，使得cam图map到原图的相应位置
     data_transform = {
         "train": transforms.Compose([transforms.Resize([224, 224]),
@@ -50,20 +38,14 @@ def main(args):
                                    transforms.ToTensor(),
                                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])}
 
-    # # 实例化训练数据集
-    # train_dataset = MyDataSet(images_path=train_images_path,
-    #                           images_class=train_images_label,
-    #                           transform=data_transform["train"])
-    #
-    # # 实例化验证数据集
-    # val_dataset = MyDataSet(images_path=val_images_path,
-    #                         images_class=val_images_label,
-    #                         transform=data_transform["val"])
-
-    # 实例化训练数据集
-    train_dataset = VOC12ClsDataset(img_name_list_path=args.img_name_path,
+    # dataset
+    train_dataset = VOC12ClsDataset(img_name_list_path=args.train_img_name_path,
                                     voc12_root=args.dataset_path,
                                     transform=data_transform["train"])
+
+    val_dataset = VOC12ClsDataset(img_name_list_path=args.train_img_name_path,
+                                  voc12_root=args.dataset_path,
+                                  transform=data_transform["val"])
 
     batch_size = args.batch_size
     nw = min([os.cpu_count(), batch_size if batch_size > 1 else 0, 8])  # number of workers
@@ -75,12 +57,12 @@ def main(args):
                                                num_workers=nw,
                                                )
 
-    # val_loader = torch.utils.data.DataLoader(val_dataset,
-    #                                          batch_size=batch_size,
-    #                                          shuffle=False,
-    #                                          pin_memory=True,
-    #                                          num_workers=nw,
-    #                                          collate_fn=val_dataset.collate_fn)
+    val_loader = torch.utils.data.DataLoader(val_dataset,
+                                             batch_size=batch_size,
+                                             shuffle=False,
+                                             pin_memory=True,
+                                             num_workers=nw,
+                                             )
 
     model = create_model(num_classes=20, has_logits=False).to(device)
 
@@ -118,15 +100,11 @@ def main(args):
                                                data_loader=train_loader,
                                                device=device,
                                                epoch=epoch)
+        # validate
+        evaluate(model=model, data_loader=val_loader, device=device, epoch=epoch, num_classes=20)
+        # print(str(confmat))
 
         scheduler.step()
-
-        # 先跑起来，暂时不验证
-        # # validate
-        # val_loss, val_acc = evaluate(model=model,
-        #                              data_loader=val_loader,
-        #                              device=device,
-        #                              epoch=epoch)
 
         tags = ["train_loss", "f1_score", "learning_rate", "val_acc", "learning_rate"]
         tb_writer.add_scalar(tags[0], train_loss, epoch)
@@ -140,9 +118,6 @@ def main(args):
     torch.save(model.state_dict(), "./weights/{}-cur_ep{}-final.pth".format(str(date), epoch))
 
 
-# def get_args(args):
-#     return args
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_classes', type=int, default=5)
@@ -152,8 +127,10 @@ if __name__ == '__main__':
     parser.add_argument('--lrf', type=float, default=0.01)
     parser.add_argument('--dataset_path', type=str,
                         default="/data/c425/tjf/datasets/VOC2012/")
-    parser.add_argument('--img_name_path', type=str,
+    parser.add_argument('--train_img_name_path', type=str,
                         default="/data/c425/tjf/vit/voc12/train.txt")
+    parser.add_argument('--val_img_name_path', type=str,
+                        default="/data/c425/tjf/vit/voc12/val.txt")
     parser.add_argument('--ori_cam_path', type=str,
                         default="/data/c425/tjf/vit/origincams/")
     parser.add_argument('--model-name', default='vit_base', help='create model name')
@@ -171,5 +148,4 @@ if __name__ == '__main__':
 
     opt = parser.parse_args()
     random.seed(0)  # 保证随机结果可复现
-    # get_args(opt)
     main(opt)

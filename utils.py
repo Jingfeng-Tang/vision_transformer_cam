@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 import sklearn.metrics as metrics
 import numpy as np
 import cv2
+from sklearn.metrics import average_precision_score
+
 
 def multilabel_score(y_true, y_pred):
     return metrics.f1_score(y_true, y_pred)
@@ -25,6 +27,50 @@ def read_pickle(file_name: str) -> list:
         return info_list
 
 
+class ConfusionMatrix(object):
+    def __init__(self, num_classes):
+        self.num_classes = num_classes
+        self.mat = None
+
+    def update(self, a, b):
+        n = self.num_classes+1
+        if self.mat is None:
+            # 创建混淆矩阵
+            self.mat = torch.zeros((n, n), dtype=torch.int64, device=a.device)
+        with torch.no_grad():
+            # 寻找GT中为目标的像素索引
+            k = (a >= 0) & (a < n)
+            # 统计像素真实类别a[k]被预测成类别b[k]的个数(这里的做法很巧妙)
+            inds = n * a[k].to(torch.int64) + b[k]
+            self.mat += torch.bincount(inds, minlength=n ** 2).reshape(n, n)
+
+    def reset(self):
+        if self.mat is not None:
+            self.mat.zero_()
+
+    def compute(self):
+        h = self.mat.float()
+        # 计算全局预测准确率(混淆矩阵的对角线为预测正确的个数)
+        acc_global = torch.diag(h).sum() / h.sum()
+        # 计算每个类别的准确率
+        acc = torch.diag(h) / h.sum(1)
+        # 计算每个类别预测与真实目标的iou
+        iu = torch.diag(h) / (h.sum(1) + h.sum(0) - torch.diag(h))
+        return acc_global, acc, iu
+
+    def __str__(self):
+        acc_global, acc, iu = self.compute()
+        return (
+            'global correct: {:.1f}\n'
+            'average row correct: {}\n'
+            'IoU: {}\n'
+            'mean IoU: {:.1f}').format(
+            acc_global.item() * 100,
+            ['{:.1f}'.format(i) for i in (acc * 100).tolist()],
+            ['{:.1f}'.format(i) for i in (iu * 100).tolist()],
+            iu.mean().item() * 100)
+
+
 def cam_norm(cam):
     cam = cam.detach().cpu()
     cam = np.array(cam)
@@ -38,7 +84,6 @@ def cam_norm(cam):
 
 def generate_origin_cam(cams, labels, names):
     # print(names[0])
-    # args = get_args()
     # print(f'cams.shape: {cams.shape}')
     # print(f'labels.shape: {labels.shape}')
     cams = cams.permute(0, 2, 1).reshape(32, 20, 14, 14)        # labels 32*20
@@ -88,7 +133,6 @@ def generate_pseudo_result(cam, oriimg_path):
     # heatmap 什么类型？
 
     # 加个背景 5e-5 大于0的极小值
-
 
 
 def train_one_epoch(model, optimizer, data_loader, device, epoch):
@@ -141,29 +185,32 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
 
 
 @torch.no_grad()
-def evaluate(model, data_loader, device, epoch):
-    loss_function = torch.nn.CrossEntropyLoss()
-
+def evaluate(model, data_loader, device, epoch, num_classes):
     model.eval()
-
-    accu_num = torch.zeros(1).to(device)  # 累计预测正确的样本数
-    accu_loss = torch.zeros(1).to(device)  # 累计损失
-
-    sample_num = 0
+    mAP = []
+    # confmat = ConfusionMatrix(num_classes)
     data_loader = tqdm(data_loader, file=sys.stdout)
-    for step, data in enumerate(data_loader):
-        images, labels = data
-        sample_num += images.shape[0]
+    with torch.no_grad():
+        for step, data in enumerate(data_loader):
+            name, image, target = data
+            image, target = image.to(device), target.to(device)
+            output, cams = model(image)
+            output = torch.sigmoid(output)
+            # print(f'output.shape: {output.shape}\n')
+            # print(f'target.shape: {target.shape}\n')
+            mAP_list = compute_mAP(target, output)
+            mAP = mAP + mAP_list
+            data_loader.desc = "[validate epoch {}] mAP: {:.3f}".format(epoch, np.mean(mAP_list))
 
-        pred = model(images.to(device))
-        pred_classes = torch.max(pred, dim=1)[1]
-        accu_num += torch.eq(pred_classes, labels.to(device)).sum()
 
-        loss = loss_function(pred, labels.to(device))
-        accu_loss += loss
+def compute_mAP(labels, outputs):
+    y_true = labels.cpu().numpy()
+    y_pred = outputs.cpu().numpy()
+    AP = []
+    for i in range(y_true.shape[0]):
+        if np.sum(y_true[i]) > 0:
+            ap_i = average_precision_score(y_true[i], y_pred[i])
+            AP.append(ap_i)
+            # print(ap_i)
 
-        data_loader.desc = "[valid epoch {}] loss: {:.3f}, acc: {:.3f}".format(epoch,
-                                                                               accu_loss.item() / (step + 1),
-                                                                               accu_num.item() / sample_num)
-
-    return accu_loss.item() / (step + 1), accu_num.item() / sample_num
+    return AP

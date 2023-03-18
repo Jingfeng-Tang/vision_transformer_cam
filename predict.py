@@ -131,7 +131,6 @@ def main():
         height, width, _ = img.shape
         # 插值生成 pseudo res
         pseudo_res = F.interpolate(cam_t, size=(height, width), mode='bilinear', align_corners=False)
-        # print('cam_t111111111111111111111111111111111111111111111111111111111111111111')
         # print(pseudo_res)
         # pseudo_res ×255   tensro 转int
         threshold = 0.6
