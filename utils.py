@@ -77,6 +77,20 @@ def generate_origin_cam(cams, labels, names):
         syn_cam_name = names[i]+'_syn_cam.jpg'
         cv2.imwrite(cam_savepth+syn_cam_name, result)
 
+
+def generate_pseudo_result(cam, oriimg_path):
+    img = cv2.imread(oriimg_path)
+    height, width, _ = img.shape
+    heatmap = cv2.applyColorMap(cv2.resize(cam, (width, height)), cv2.COLORMAP_JET)
+    # 设置阈值，大于阈值（类别区域），小于阈值（背景区域）
+    threshold = 200
+    # 小于阈值，置0
+    # heatmap 什么类型？
+
+    # 加个背景 5e-5 大于0的极小值
+
+
+
 def train_one_epoch(model, optimizer, data_loader, device, epoch):
     model.train()
     loss_function = torch.nn.MultiLabelSoftMarginLoss()

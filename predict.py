@@ -10,10 +10,33 @@ from vit_model import vit_base_patch16_224_in21k as create_model
 import numpy as np
 import cv2
 from voc12.data import load_image_label_list_from_npy, load_img_name_list
+import torch.nn.functional as F
+torch.set_printoptions(threshold=np.inf)
 
 
 name_list = load_img_name_list("/data/c425/tjf/vit/voc12/train.txt")
 labels = load_image_label_list_from_npy(name_list)
+
+
+def bitget(byteval, idx):
+    return (byteval & 1 << idx) != 0  # 判断输入字节的idx比特位上是否为1
+
+
+def color_map(N=256, normalized=False):
+    dtype = 'float32' if normalized else 'uint8'
+    cmap = np.zeros((N, 3), dtype=dtype)
+    for i in range(N):
+        c = i
+        r = g = b = 0  # 将类别索引和rgb分量都视为8位2进制数，即一个字节
+        for j in range(8):  # 从高到低填入rgb分量的每个比特位
+            r = r | bitget(c, 0) << (7 - j)  # 每次将类别索引的第0位放置到r分量
+            g = g | bitget(c, 1) << (7 - j)  # 每次将类别索引的第1位放置到g分量
+            b = b | bitget(c, 2) << (7 - j)  # 每次将类别索引的第2位放置到b分量
+            c = c >> 3  # 将类别索引移位
+        cmap[i] = np.array([r, g, b])
+    cmap = cmap / 255 if normalized else cmap
+    return cmap
+
 
 # predict  单张图片预测
 def main():
@@ -32,12 +55,7 @@ def main():
        )
 
     # load image
-    # img_path = "/data/c425/tjf/datasets/flower_photos/tulips/16907559551_05ded87fb2_n.jpg"
-    # img_path = "/data/c425/tjf/datasets/flower_photos/sunflowers/4933822272_79af205b94.jpg"
-    # img_path = "/data/c425/tjf/datasets/flower_photos/daisy/3445110406_0c1616d2e3_n.jpg"
-    # img_path = "/data/c425/tjf/datasets/flower_photos/dandelion/10200780773_c6051a7d71_n.jpg"
-    # img_path = "/data/c425/tjf/datasets/flower_photos/roses/14176042519_5792b37555.jpg"
-    img_path = "/data/c425/tjf/datasets/VOC2012/JPEGImages/2007_000250.jpg"
+    img_path = "/data/c425/tjf/datasets/VOC2012/JPEGImages/2007_000491.jpg"
     assert os.path.exists(img_path), "file: '{}' dose not exist.".format(img_path)
     imgo = Image.open(img_path)
     plt.imshow(imgo)
@@ -53,15 +71,27 @@ def main():
     # read class_indict
     json_path = './class_indices.json'
     assert os.path.exists(json_path), "file: '{}' dose not exist.".format(json_path)
-
     with open(json_path, "r") as f:
         class_indict = json.load(f)
     # print(f'cls_indict:{class_indict}')
 
+    # 载入调色板
+    palette_path = "./palette.json"
+    assert os.path.exists(palette_path), f"palette {palette_path} not found."
+    with open(palette_path, "rb") as f:
+        pallette_dict = json.load(f)
+        pallette = []
+        for v in pallette_dict.values():
+            pallette += v
+
+    # print(pallette)
+    voc12pallettemap = color_map(21)
+    # print(voc12pallettemap)
+
     # create model
     model = create_model(num_classes=20, has_logits=False).to(device)
     # load model weights
-    model_weight_path = "./weights/model-499.pth"
+    model_weight_path = "./weights/2023-03-17-cur_ep485-bestloss.pth"
     model.load_state_dict(torch.load(model_weight_path, map_location=device))
     # load label
 
@@ -81,17 +111,48 @@ def main():
         predict_cla = torch.argmax(predict).numpy()
         cams = cams.squeeze(0).reshape(14, 14, 20).permute(2, 0, 1)
         cam = cams[predict_cla]
+        cam_t = cam
         cam = cam.cpu()
-        cam = np.array(cam)
-        # 归一化
-        cam = cam - np.min(cam)  # 减去最小，除以最大，目的是归一化
-        cam_img = cam / np.max(cam)
-        cam_img = np.uint8(255 * cam_img)
-        heatmap1 = cv2.applyColorMap(cv2.resize(cam_img, (14, 14)), cv2.COLORMAP_JET)
-        cv2.imwrite('CAM_14.jpg', heatmap1)
+        cam_np = np.array(cam)
+        # np 归一化
+        cam_np = cam_np - np.min(cam_np)
+        cam_np = cam_np / np.max(cam_np)
+        cam_np = np.uint8(255 * cam_np)
+        # tensor 归一化
+        cam_t = cam_t - torch.min(cam_t)
+        cam_t = cam_t / torch.max(cam_t)
+        cam_t = cam_t.unsqueeze(0)
+        cam_t = cam_t.unsqueeze(0)
+        # print(cam_t)
+        # cam_t = torch.uint8(255 * cam_t)
+        # print(cam_t)
+        # 获得原图与尺寸
         img = cv2.imread(img_path)
         height, width, _ = img.shape
-        heatmap = cv2.applyColorMap(cv2.resize(cam_img, (width, height)), cv2.COLORMAP_JET)
+        # 插值生成 pseudo res
+        pseudo_res = F.interpolate(cam_t, size=(height, width), mode='bilinear', align_corners=False)
+        # print('cam_t111111111111111111111111111111111111111111111111111111111111111111')
+        # print(pseudo_res)
+        # pseudo_res ×255   tensro 转int
+        threshold = 0.6
+        pseudo_res[pseudo_res < 0.6] = 0  # 生成掩模，背景部分为0
+        pseudo_res[pseudo_res >= 0.6] = 10  # 生成掩模，背景部分为0
+        # 此时目标为数值，背景为0
+        # plattle
+        pseudo_res = pseudo_res.squeeze(0)
+        pseudo_res = pseudo_res.squeeze(0)
+        pseudo_res = torch.tensor(pseudo_res, dtype=torch.uint8)
+        print(pseudo_res.dtype)
+        # pseudo_res_np = pseudo_res.cpu().detach().numpy()
+        toimg = transforms.ToPILImage()
+        mask = toimg(pseudo_res)
+        # mask = Image.fromarray(pseudo_res_np)
+        # print(mask)
+        mask.putpalette(pallette)
+        mask.save("test_result.png")
+
+        # 生成可视化热力图
+        heatmap = cv2.applyColorMap(cv2.resize(cam_np, (width, height)), cv2.COLORMAP_JET)
         result = heatmap * 0.3 + img * 0.5
         cv2.imwrite('CAM.jpg', result)
 
