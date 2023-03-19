@@ -147,15 +147,15 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
         names, images, labels = data
         sample_num += images.shape[0]
         pred, cams = model(images.to(device))
-        if epoch > 495:
-            generate_origin_cam(cams, labels, names)
-        # a = torch.zeros(1)
-        # b = a[10]
+        pred = torch.nn.functional.softmax(pred, dim=1)
+        # if epoch > 495:
+        #     generate_origin_cam(cams, labels, names)
         # generate origin cams
         labels_sum = labels.sum(dim=1)  # 每个图中有几个类别
         pred_multihot = torch.zeros(pred.shape)  # pred all zero tensor
         for i in range(labels_sum.shape[0]):
-            val, index = torch.topk(pred, labels_sum[i].int(), dim=1)
+            # ？？？？？？？？？？？？？？？？？
+            val, index = torch.topk(pred, labels_sum[i].int(), dim=1)       # 注意这里是不是不需要softmax？？？？？？
             for j in range(labels_sum[i].int()):
                 pred_multihot[i][index[i][j]] = 1
         pred_multihot_np = pred_multihot.numpy()

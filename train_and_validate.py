@@ -76,13 +76,12 @@ def main(args):
                                              num_workers=nw,
                                              )
 
-    model = create_model(num_classes=20, has_logits=False).to(device)
-
+    model = create_model(num_classes=args.num_classes, has_logits=False).to(device)
+    # print(model)
     if args.weights != "":
         assert os.path.exists(args.weights), "weights file: '{}' not exist.".format(args.weights)
         weights_dict = torch.load(args.weights, map_location=device)
-        # 删除不需要的权重
-        del_keys = ['head.weight', 'head.bias'] if model.has_logits \
+        del_keys = ['head.weight', 'head.bias'] if model.has_logits or ~('pre_logits.fc.weight' in weights_dict)\
             else ['pre_logits.fc.weight', 'pre_logits.fc.bias', 'head.weight', 'head.bias']
         for k in del_keys:
             del weights_dict[k]
@@ -113,7 +112,7 @@ def main(args):
                                                device=device,
                                                epoch=epoch)
         # validate
-        mAP = evaluate(model=model, data_loader=val_loader, device=device, epoch=epoch, num_classes=20)
+        mAP = evaluate(model=model, data_loader=val_loader, device=device, epoch=epoch, num_classes=args.num_classes)
 
         scheduler.step()
 
@@ -144,32 +143,30 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num_classes', type=int, default=5)
-    parser.add_argument('--epochs', type=int, default=500)
-    parser.add_argument('--batch-size', type=int, default=32)
-    parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--lrf', type=float, default=0.01)
+    # 模型参数
+    parser.add_argument('--model_name', type=str, default='vit_base', required=True, help='create model name')
+    parser.add_argument('--num_classes', type=int, default=20, required=True)
+    parser.add_argument('--weights', type=str, default='', required=True,
+                        help='initial weights path, set to null character if you do not want to load weights')
+    parser.add_argument('--freeze_layers', type=bool, default=False, required=True, help='True:freeze weight')
+    # 训练参数
+    parser.add_argument('--epochs', type=int, default=500, required=True)
+    parser.add_argument('--batch_size', type=int, default=32, required=True)
+    parser.add_argument('--lr', type=float, default=0.001, required=True)
+    parser.add_argument('--lrf', type=float, default=0.01, required=True, help='')
+    # 文件路径
     parser.add_argument('--dataset_path', type=str,
-                        default="/data/c425/tjf/datasets/VOC2012/")
+                        default="/data/c425/tjf/datasets/VOC2012/", required=True)
     parser.add_argument('--train_img_name_path', type=str,
-                        default="/data/c425/tjf/vit/voc12/train.txt")
+                        default="/data/c425/tjf/vit/voc12/train.txt", required=True)
     parser.add_argument('--val_img_name_path', type=str,
-                        default="/data/c425/tjf/vit/voc12/val.txt")
+                        default="/data/c425/tjf/vit/voc12/val.txt", required=True)
     parser.add_argument('--ori_cam_path', type=str,
-                        default="/data/c425/tjf/vit/origincams/")
-    parser.add_argument('--model-name', default='vit_base', help='create model name')
-
-    # 预训练权重路径，如果不想载入就设置为空字符
-    parser.add_argument('--weights', type=str, default='',
-                        help='initial weights path')
-    # parser.add_argument('--weights', type=str, default='./jx_vit_base_patch16_224_in21k-e5005f0a.pth',
-    #                     help='initial weights path')
-    # parser.add_argument('--weights', type=str, default='./model-499.pth',
-    #                     help='initial weights path')
-    # 是否冻结权重
-    parser.add_argument('--freeze-layers', type=bool, default=False)
-    parser.add_argument('--device', default='cuda:0', help='device id (i.e. 0 or 0,1 or cpu)')
-
+                        default="/data/c425/tjf/vit/origincams/", required=True)
+    # 设备参数
+    parser.add_argument('--device', default='cuda:0', type=str, required=True, help='device id (i.e. 0 or 0,1 or cpu)')
     opt = parser.parse_args()
-    same_seeds(0)
+
+    same_seeds(0)   # 随机化种子
+
     main(opt)
