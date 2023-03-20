@@ -21,3 +21,18 @@ add-----shell脚本，需输入参数\
 add-----update_log.md， 更新日志从readme中分离\
 mod-----完善参数部分代码，大部分参数required=True
 mod-----模型权重加载时存在bug
+## 2023年3月19日20:47:32
+issue-----设置500ep,batchsize32|700ep,bs32|1000ep,8bs 效果都不好mAP在0.65左右，loss在0.7左右降不下去，搜了一下感觉应该用sigmoid做激活函数，试一下吧。
+## 2023年3月20日14:51:24
+add-----遵从ToCo与MCTformer的实验设置，使用ImageNet预训练权重训练模型\
+add-----确定两个评估指标\
+1、mAP，用于多标签分类，在验证阶段和测试阶段\
+2、mIOU，用于语义分割，在验证阶段和测试阶段\
+目前mAP在验证阶段已经写完测试完，测试了sklearn的average_precision_score，该函数有两个输入outputs、labels\
+模型输出outputs后，加上sigmoid，将特征映射到（0,1）后为函数输入的outputs\
+labels为真实标签，例子(1, 0, 1, 0, 0, 0, 1)
+## 2023年3月20日20:38:26
+mod-----找到了validate时mAP过低的原因，在预加载权重时删除了分类头权重，导致多标签分类不准，修改后mAP达到0.876\
+mod-----utils中validate中mAP的单步和总体均值显示\
+add-----validate.py mAP计算\
+add-----data.py 分割标签的导入

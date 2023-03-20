@@ -96,7 +96,7 @@ def main():
     # create model
     model = create_model(num_classes=20, has_logits=False).to(device)
     # load model weights
-    model_weight_path = "./weights/2023-03-18-cur_ep200-bestloss.pth"
+    model_weight_path = "/data/c425/tjf/vit/weights_pretarined_ep20/2023-03-19-cur_ep199-bestloss.pth"
     model.load_state_dict(torch.load(model_weight_path, map_location=device))
     # load label
 

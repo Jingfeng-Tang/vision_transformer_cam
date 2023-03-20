@@ -40,7 +40,7 @@ class ConfusionMatrix(object):
         with torch.no_grad():
             # 寻找GT中为目标的像素索引
             k = (a >= 0) & (a < n)
-            # 统计像素真实类别a[k]被预测成类别b[k]的个数(这里的做法很巧妙)
+            # 统计像素真实类别a[k]被预测成类别b[k]的个数
             inds = n * a[k].to(torch.int64) + b[k]
             self.mat += torch.bincount(inds, minlength=n ** 2).reshape(n, n)
 
@@ -147,7 +147,8 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
         names, images, labels = data
         sample_num += images.shape[0]
         pred, cams = model(images.to(device))
-        pred = torch.nn.functional.softmax(pred, dim=1)
+        # pred = torch.nn.functional.softmax(pred, dim=1)
+        # pred = torch.sigmoid(pred)
         # if epoch > 495:
         #     generate_origin_cam(cams, labels, names)
         # generate origin cams
@@ -170,9 +171,12 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
         loss.backward()
         accu_loss += loss.detach()
 
-        data_loader.desc = "[train epoch {}] loss: {:.3f}, f1_score: {:.3f}".format(epoch,
-                                                                                    accu_loss.item() / (step + 1),
-                                                                                    f1_score)
+        # data_loader.desc = "[train epoch {}] loss: {:.3f}, f1_score: {:.3f}".format(epoch,
+        #                                                                             accu_loss.item() / (step + 1),
+        #                                                                             f1_score)
+        data_loader.desc = "[train epoch {}] loss: {:.3f}".format(epoch,
+                                                                  accu_loss.item() / (step + 1),
+                                                                  )
 
         if not torch.isfinite(loss):
             print('WARNING: non-finite loss, ending training ', loss)
@@ -196,23 +200,45 @@ def evaluate(model, data_loader, device, epoch, num_classes):
             image, target = image.to(device), target.to(device)
             output, cams = model(image)
             output = torch.sigmoid(output)
-            # print(f'output.shape: {output.shape}\n')
-            # print(f'target.shape: {target.shape}\n')
+            # 计算mAP
             mAP_list = compute_mAP(target, output)
             mAP = mAP + mAP_list
             mean_ap = np.mean(mAP_list)
-            data_loader.desc = "[validate epoch {}] mAP: {:.3f}".format(epoch, mean_ap)
+            mean_ap_all = np.mean(mAP)
+            # 计算mIOU
+            # cams
+            data_loader.desc = "[test epoch {}] cur_step_mAP: {:.3f} all_step_mAP: {:.3f}".format(epoch,
+                                                                                                  mean_ap,
+                                                                                                  mean_ap_all)
 
     return mean_ap
 
+
 def compute_mAP(labels, outputs):
+    # print(f'outputs: {outputs}')
+    # print(f'outputs.shape: {outputs.shape}\n')
+    # print(f'labels: {labels}')
+    # print(f'labels.shape: {labels.shape}')
+
     y_true = labels.cpu().numpy()
     y_pred = outputs.cpu().numpy()
     AP = []
+    # print(f'y_true.shape[0]: {y_true.shape[0]}')
     for i in range(y_true.shape[0]):
         if np.sum(y_true[i]) > 0:
+            # print(f'y_true[i]: {y_true[i]}')
+            # print(f'y_pred[i]: {y_pred[i]}')
             ap_i = average_precision_score(y_true[i], y_pred[i])
             AP.append(ap_i)
             # print(ap_i)
 
     return AP
+
+
+if __name__ == '__main__':
+    labels = torch.tensor([1, 0, 1, 0, 0, 0])
+    print(labels)
+    outputs = torch.tensor([0.98, 0.3, 0.86, 0.85, 0.36, 0.48])
+    ap = average_precision_score(labels, outputs)       # ok
+
+    print(ap)

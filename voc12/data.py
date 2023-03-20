@@ -1,4 +1,3 @@
-
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -6,8 +5,10 @@ import PIL.Image
 import os.path
 import scipy.misc
 from torchvision import transforms
+from torchvision.transforms import functional as F
 
 IMG_FOLDER_NAME = "JPEGImages"
+SEG_LABEL_FOLDER_NAME = "SegmentationClass"
 ANNOT_FOLDER_NAME = "Annotations"
 
 CAT_LIST = ['aeroplane', 'bicycle', 'bird', 'boat',
@@ -52,6 +53,10 @@ def get_img_path(img_name, voc12_root):
     return os.path.join(voc12_root, IMG_FOLDER_NAME, img_name + '.jpg')
 
 
+def get_seg_label_path(img_name, voc12_root):
+    return os.path.join(voc12_root, SEG_LABEL_FOLDER_NAME, img_name + '.png')
+
+
 def load_img_name_list(dataset_path):
 
     img_gt_name_list = open(dataset_path).read().splitlines()
@@ -63,10 +68,11 @@ def load_img_name_list(dataset_path):
 
 class VOC12ImageDataset(Dataset):
 
-    def __init__(self, img_name_list_path, voc12_root, transform=None):
+    def __init__(self, img_name_list_path, voc12_root, transform=None, seg_label_flag=False):
         self.img_name_list = load_img_name_list(img_name_list_path)
         self.voc12_root = voc12_root
         self.transform = transform
+        self.seg_label_flag = seg_label_flag
 
     def __len__(self):
         return len(self.img_name_list)
@@ -76,23 +82,38 @@ class VOC12ImageDataset(Dataset):
 
         img = PIL.Image.open(get_img_path(name, self.voc12_root)).convert("RGB")
 
+        if self.seg_label_flag:
+            seg_label = PIL.Image.open(get_seg_label_path(name, self.voc12_root))
+            seg_label = torch.as_tensor(np.array(seg_label), dtype=torch.int64)
+
         if self.transform:
             img = self.transform(img)
 
-        return name, img
+        if self.seg_label_flag:
+            return name, img, seg_label
+        else:
+            return name, img
 
 
 class VOC12ClsDataset(VOC12ImageDataset):
 
-    def __init__(self, img_name_list_path, voc12_root, transform=None):
-        super().__init__(img_name_list_path, voc12_root, transform)
+    def __init__(self, img_name_list_path, voc12_root, transform=None, seg_label_flag=False):
+        super().__init__(img_name_list_path, voc12_root, transform, seg_label_flag)
+        self.seg_label_flag = seg_label_flag
         self.label_list = load_image_label_list_from_npy(self.img_name_list)
-        #self.label_list = load_image_label_list_from_xml(self.img_name_list, self.voc12_root)
 
     def __getitem__(self, idx):
-        name, img = super().__getitem__(idx)
+
+        if self.seg_label_flag:
+            name, img, seg_label = super().__getitem__(idx)
+        else:
+            name, img = super().__getitem__(idx)
 
         label = torch.from_numpy(self.label_list[idx])
 
-        return name, img, label
+        if self.seg_label_flag:
+            return name, img, label, seg_label
+        else:
+            return name, img, label
+
 
