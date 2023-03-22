@@ -75,7 +75,7 @@ def main(args):
                                                )
 
     val_loader = torch.utils.data.DataLoader(val_dataset,
-                                             batch_size=batch_size,
+                                             batch_size=1,
                                              shuffle=False,
                                              pin_memory=True,
                                              num_workers=nw,
@@ -159,12 +159,12 @@ if __name__ == '__main__':
     # 模型参数
     parser.add_argument('--model_name', type=str, default='vit_base', required=True, help='create model name')
     parser.add_argument('--num_classes', type=int, default=20, required=True)
-    parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/weights_pretarined_ep20/2023-03-19-cur_ep199-bestloss.pth', required=False,
+    parser.add_argument('--weights', type=str, default='', required=False,
                         help='initial weights path, set to null character if you do not want to load weights')
     parser.add_argument('--freeze_layers', type=bool, default=False, required=True, help='True:freeze weight')
     # 训练参数
-    parser.add_argument('--epochs', type=int, default=500, required=True)
-    parser.add_argument('--batch_size', type=int, default=64, required=True)
+    parser.add_argument('--epochs', type=int, default=1000, required=True)
+    parser.add_argument('--batch_size', type=int, default=16, required=True)
     # Optimizer parameters
     parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
                         help='Optimizer (default: "adamw"')
@@ -214,7 +214,7 @@ if __name__ == '__main__':
     parser.add_argument('--ori_cam_path', type=str,
                         default="/data/c425/tjf/vit/origincams/", required=True)
     # 设备参数
-    parser.add_argument('--device', default='cuda:0', type=str, required=True, help='device id (i.e. 0 or 0,1 or cpu)')
+    parser.add_argument('--device', default='cuda:1', type=str, required=True, help='device id (i.e. 0 or 0,1 or cpu)')
     opt = parser.parse_args()
 
     same_seeds(0)   # 随机化种子

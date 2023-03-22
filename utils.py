@@ -55,7 +55,8 @@ class ConfusionMatrix(object):
         # 计算每个类别的准确率
         acc = torch.diag(h) / h.sum(1)
         # 计算每个类别预测与真实目标的iou
-        iu = torch.diag(h) / (h.sum(1) + h.sum(0) - torch.diag(h))
+        iu = torch.diag(h) / (h.sum(1) + h.sum(0) - torch.diag(h)+1)        # +1 防止 nan
+
         return acc_global, acc, iu
 
     def __str__(self):
@@ -69,6 +70,11 @@ class ConfusionMatrix(object):
             ['{:.1f}'.format(i) for i in (acc * 100).tolist()],
             ['{:.1f}'.format(i) for i in (iu * 100).tolist()],
             iu.mean().item() * 100)
+
+    def get_mIOU(self):
+        acc_global, acc, iu = self.compute()
+        # if iu.
+        return iu.mean().item() * 100
 
 
 def cam_norm(cam):
@@ -196,29 +202,28 @@ def evaluate(model, data_loader, device, epoch, num_classes):
     data_loader = tqdm(data_loader, file=sys.stdout)
     with torch.no_grad():
         for step, data in enumerate(data_loader):
-            name, image, target = data
+            name, image, target, seg_labels = data
+
             image, target = image.to(device), target.to(device)
+
             output, cams = model(image)
+
             output = torch.sigmoid(output)
+
             # 计算mAP
             mAP_list = compute_mAP(target, output)
             mAP = mAP + mAP_list
             mean_ap = np.mean(mAP_list)
             mean_ap_all = np.mean(mAP)
             # 计算mIOU
-            # cams
             data_loader.desc = "[test epoch {}] cur_step_mAP: {:.3f} all_step_mAP: {:.3f}".format(epoch,
                                                                                                   mean_ap,
                                                                                                   mean_ap_all)
 
-    return mean_ap
+    return mean_ap_all
 
 
 def compute_mAP(labels, outputs):
-    # print(f'outputs: {outputs}')
-    # print(f'outputs.shape: {outputs.shape}\n')
-    # print(f'labels: {labels}')
-    # print(f'labels.shape: {labels.shape}')
 
     y_true = labels.cpu().numpy()
     y_pred = outputs.cpu().numpy()

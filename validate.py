@@ -9,8 +9,10 @@ from vit_model import vit_base_patch16_224_in21k as create_model
 from voc12.data import VOC12ClsDataset
 import numpy as np
 from tqdm import tqdm
-from utils import compute_mAP
+from utils import compute_mAP, ConfusionMatrix, cam_norm
 from torchvision.transforms import functional as F
+import json
+import cv2
 torch.set_printoptions(threshold=np.inf)
 
 
@@ -37,15 +39,40 @@ def ToTensor(seg_label):
     return target
 
 
+# 载入调色板
+def load_palette():
+    palette_path = "./palette.json"
+    assert os.path.exists(palette_path), f"palette {palette_path} not found."
+    with open(palette_path, "rb") as f:
+        pallette_dict = json.load(f)
+        pallette = []
+        for v in pallette_dict.values():
+            pallette += v
+
+    return pallette
+
+
 def val(args):
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
-    # 创建原始CAM保存文件夹
-    if os.path.exists("./origincams") is False:
-        os.makedirs("./origincams")
+    # 创建seg_res保存文件夹
+    seg_res_path = './validate_seg_res/'
+    if os.path.exists(seg_res_path) is False:
+        os.makedirs(seg_res_path)
+
+    # 创建validate_cam保存文件夹
+    validate_cam_path = './validate_cam/'
+    if os.path.exists(validate_cam_path) is False:
+        os.makedirs(validate_cam_path)
 
     # 用来保存验证过程中信息
-    val_log_txt = "testing_log_{}.txt".format(datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    val_log_txt = "validating_log_{}.txt".format(datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+
+    # 加载原图
+    oriImgFolderpath = args.dataset_path+'JPEGImages/'
+
+    # 加载调色板
+    pallette = load_palette()
 
 
     # 遵循SEAM数据增强操作  目前这样数据增强只是为了可视化，使得cam图map到原图的相应位置
@@ -86,18 +113,30 @@ def val(args):
     # validate
     model.eval()
     mAP = []
-    # confmat = ConfusionMatrix(num_classes)
+    confmat = ConfusionMatrix(20)
     data_loader = tqdm(val_loader, file=sys.stdout)
     tags = ["mAP_multiple_class_label", "mIOU"]
     with torch.no_grad():
+        validate_IOU = []
         for step, data in enumerate(data_loader):
             name, image, target, seg_labels = data
+            # print(name)
             # seg_labels为原图大小，dtype为int64
+            b, h, w = seg_labels.shape
             image, target, seg_labels = image.to(device), target.to(device), seg_labels.to(device)
             output, cams = model(image)
-            print(cams.shape)
-            print(cams.dtype)
-            print(cams.dtype)
+            cams_hw = cams.reshape(b, 14, 14, 20).permute(0, 3, 1, 2)
+            cam_show = cams_hw
+            #
+            # print(cams_hw[0][0])
+            # 先sigmoid试一试
+            cams_hw = torch.sigmoid(cams_hw)
+            # 归一化
+            # for i in range(cams_hw.shape[0]):
+            #     for j in range(cams_hw.shape[1]):
+            #         cams_hw[i][j] = cams_hw[i][j] - torch.min(cams_hw[i][j])
+            #         cams_hw[i][j] = cams_hw[i][j] / torch.max(cams_hw[i][j])
+
             output = torch.sigmoid(output)      # class tokens用于多标签分类
             # 计算mAP
             mAP_list = compute_mAP(target, output)
@@ -105,10 +144,59 @@ def val(args):
             mean_ap = np.mean(mAP_list)
             mean_ap_all = np.mean(mAP)
             # 计算mIOU
+            # 将20个类别的14*14cam插值回原图大小
+            cam_label = torch.nn.functional.interpolate(cams_hw, size=(h, w), mode='bilinear', align_corners=False)
+            # 设置阈值，将每个类的最大激活区域找出来，其他区域置0
+            high_threshold = 0.916
+            # print(cam_label[0][0])
+            cam_label[cam_label < high_threshold] = 0
+            # 添加背景类
+            bg_label = torch.full((b, 1, h, w), 1e-5, device=device)
+            # 整合背景类与目标类
+            cam_bg_obj = torch.cat((bg_label, cam_label), dim=1)
+            # cam生成的分割预测
+            cam_segPred = torch.argmax(cam_bg_obj, dim=1)
+            # 计算mIOU
+            confmat.update(seg_labels.flatten(), cam_segPred.flatten())
+            cur_step_mean_IOU = confmat.get_mIOU()
+            validate_IOU.append(cur_step_mean_IOU)
+            # 生成cam图用于保存
+            # 思路：20张cam图先取max，再归一化生成  |  先归一化再取max
+            cam_show, cam_indices = cam_show.max(dim=1)
+            cam_show = cam_show.squeeze(0)
+            cam_normed = cam_norm(cam_show)     # 归一化
+            oriImgpath = oriImgFolderpath+str(name[0])+'.jpg'
+            img = cv2.imread(oriImgpath)
+            height, width, _ = img.shape
+            # 生成可视化热力图
+            heatmap = cv2.applyColorMap(cv2.resize(cam_normed, (width, height)), cv2.COLORMAP_JET)
+            result = heatmap * 0.3 + img * 0.5
+            save_cam_path = validate_cam_path+str(name[0])+'_cam.jpg'
+            cv2.imwrite(save_cam_path, result)
 
-            data_loader.desc = "[test step {}] cur_step_mAP: {:.3f} all_step_mAP: {:.3f}".format(step,
-                                                                                                 mean_ap,
-                                                                                                 mean_ap_all)
+
+
+            # a = []
+            # b = a[10]
+
+            # 生成seg_label图片用于保存
+            pseudo_res = torch.as_tensor(cam_segPred, dtype=torch.uint8)
+            toimg = transforms.ToPILImage()
+            mask = toimg(pseudo_res)
+            mask.putpalette(pallette)
+            save_name = seg_res_path+str(name[0])+"_validate_seg_result.png"
+            mask.save(save_name)
+
+            data_loader.desc = "[test step {}] cur_step_mAP: {:.3f} all_step_mAP: {:.3f} cur_step_mean_iou:{:.3f} "\
+                .format(step,
+                        mean_ap,
+                        mean_ap_all,
+                        cur_step_mean_IOU)
+        iou_sum = 0.0
+        for item in validate_IOU:
+            iou_sum += item
+        validate_mean_IOU = iou_sum / len(validate_IOU)
+        print(f'validate_mean_IOU: {validate_mean_IOU}')
 
     # write into txt
     with open(val_log_txt, "a") as f:
@@ -139,5 +227,12 @@ if __name__ == '__main__':
     opt = parser.parse_args()
 
     same_seeds(0)   # 随机化种子
+
+    # a = torch.tensor(([1, 2, 5], [6, 7, 8]))
+    # print(a.shape)
+    # b = a.max(dim=1)
+    # print(b)
+    # a = []
+    # b = a[10]
 
     val(opt)

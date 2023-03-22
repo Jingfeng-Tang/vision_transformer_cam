@@ -106,6 +106,7 @@ class VOC12ClsDataset(VOC12ImageDataset):
 
         if self.seg_label_flag:
             name, img, seg_label = super().__getitem__(idx)
+
         else:
             name, img = super().__getitem__(idx)
 

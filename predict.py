@@ -59,7 +59,7 @@ def main():
        )
 
     # load image
-    img_name = '2007_000925'
+    img_name = '2007_000733'
     img_path = '/data/c425/tjf/datasets/VOC2012/JPEGImages/'+img_name+'.jpg'
     assert os.path.exists(img_path), "file: '{}' dose not exist.".format(img_path)
     imgo = Image.open(img_path)
@@ -78,7 +78,6 @@ def main():
     assert os.path.exists(json_path), "file: '{}' dose not exist.".format(json_path)
     with open(json_path, "r") as f:
         class_indict = json.load(f)
-    # print(f'cls_indict:{class_indict}')
 
     # 载入调色板
     palette_path = "./palette.json"
@@ -91,7 +90,6 @@ def main():
 
     # print(pallette)
     voc12pallettemap = color_map(21)
-    # print(voc12pallettemap)
 
     # create model
     model = create_model(num_classes=20, has_logits=False).to(device)
@@ -101,20 +99,17 @@ def main():
     # load label
 
     model.eval()
-    # 获取模型的参数
-    # print(model)
-    # for param in model.parameters():
-    #     print(f'param: {param.size()}')
-    #     print('\n')
-    # print('-------------------')
-    # print(f'param[-1]: {model.parameters()}')
+
     with torch.no_grad():
         # predict class
         output, cams = model(img.to(device))
         output = torch.squeeze(output).cpu()
         predict = torch.softmax(output, dim=0)
         predict_cla = torch.argmax(predict).numpy()
+        print(predict_cla)
+
         cams = cams.squeeze(0).reshape(14, 14, 20).permute(2, 0, 1)
+        print(cams.shape)
         cam = cams[predict_cla]
         cam_t = cam
         cam = cam.cpu()
@@ -153,12 +148,12 @@ def main():
         # mask = Image.fromarray(pseudo_res_np)
         # print(mask)
         mask.putpalette(pallette)
-        mask.save("test_result.png")
+        mask.save("predict_test_result.png")
 
         # 生成可视化热力图
         heatmap = cv2.applyColorMap(cv2.resize(cam_np, (width, height)), cv2.COLORMAP_JET)
         result = heatmap * 0.3 + img * 0.5
-        cv2.imwrite('CAM.jpg', result)
+        cv2.imwrite('predict_CAM.jpg', result)
 
     label_name = load_image_label_from_xml(img_name, '/data/c425/tjf/datasets/VOC2012/')
 
