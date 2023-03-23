@@ -112,6 +112,7 @@ class Attention(nn.Module):
         attn = (q @ k.transpose(-2, -1)) * self.scale       # scale 0.125  attn: 8*12*197*197
         # attn 每个patch和patch之间的注意力
         attn = attn.softmax(dim=-1)     # attn： 8*12*197*197
+        weights = attn
         attn = self.attn_drop(attn)
 
         # @: multiply -> [batch_size, num_heads, num_patches + 1, embed_dim_per_head]
@@ -126,7 +127,7 @@ class Attention(nn.Module):
         # print(f'x3.shape:{x.shape}')
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x
+        return x, weights
 
 
 class Mlp(nn.Module):
@@ -179,13 +180,14 @@ class Block(nn.Module):
         # step1: norm1 维度不变 8*197*768
         # step2: attn 注意力机制 还是8*197*768
         # step3: + 残差 8*197*768
-        x = x + self.drop_path(self.attn(self.norm1(x)))
+        o, weights = self.attn(self.norm1(x))
+        x = x + self.drop_path(o)
         # step1: norm2 维度不变 8*197*768
         # step2: mlp 注意力机制 还是8*197*768
         # step3: + 残差 8*197*768
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         # end： 8*197*768
-        return x
+        return x, weights
 
 
 class VisionTransformer(nn.Module):
@@ -266,6 +268,8 @@ class VisionTransformer(nn.Module):
         nn.init.trunc_normal_(self.cls_token, std=0.02)
         self.apply(_init_vit_weights)
 
+        self.twelveblocks = []
+
     def forward_features(self, x):
         # print(f'label:{label.shape}')
         # [B, C, H, W] -> [B, num_patches, embed_dim]
@@ -278,7 +282,19 @@ class VisionTransformer(nn.Module):
             x = torch.cat((cls_token, self.dist_token.expand(x.shape[0], -1, -1), x), dim=1)
 
         x = self.pos_drop(x + self.pos_embed)       # 加入位置编码
-        x = self.blocks(x)                  # 进入transformer block  此时x 8*197*768
+
+        # x = self.blocks(x)                  # 进入transformer block  此时x 8*197*768
+        attn_weights = []
+        attn_matrix = []
+        for i, blk in enumerate(self.blocks):
+            x, weights_i = blk(x)
+            if len(self.blocks) - i <= 12:
+                attn_weights.append(weights_i)
+                attn_matrix.append(x)
+
+        # return x[:, 0:self.num_classes], attn_weights
+
+        #
         # 8*197*768
         x = self.norm(x)
         # -------------------------------------------------------------------------------------------------
@@ -296,7 +312,6 @@ class VisionTransformer(nn.Module):
         cls_weight_test = cls_weight
         # cls_weight_test = cls_weight_test.unsqueeze(dim=1).unsqueeze(dim=2)
         # cls_weight_test = cls_weight_test.repeat(8, 1, 1, 1)
-
         cls_weight_test = cls_weight_test.permute(1, 0)
         # print(f'cls_weight_test.shape: {cls_weight_test.shape}')  # 5*768
         cams = torch.einsum('ijk,kl->ijl', patch_tokens, cls_weight_test)
@@ -304,12 +319,12 @@ class VisionTransformer(nn.Module):
         # print(f'cams.shape: {cams.shape}')
         # -------------------------------------------------------------------------------------------------
         if self.dist_token is None:
-            return self.pre_logits(x[:, 0]), cams
+            return self.pre_logits(x[:, 0]), cams, attn_weights, attn_matrix     # cls token, cams, attn_weights:list 12stage attention blocks weights
         else:
             return x[:, 0], x[:, 1]
 
     def forward(self, x):
-        x, cams = self.forward_features(x)
+        x, cams, attn_weights, attn_matrix = self.forward_features(x)
         if self.head_dist is not None:
             x, x_dist = self.head(x[0]), self.head_dist(x[1])
             if self.training and not torch.jit.is_scripting():
@@ -319,7 +334,8 @@ class VisionTransformer(nn.Module):
                 return (x + x_dist) / 2
         else:
             x = self.head(x)
-        return x, cams
+
+        return x, cams, attn_weights, attn_matrix
 
 
 def _init_vit_weights(m):

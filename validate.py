@@ -124,13 +124,13 @@ def val(args):
             # seg_labels为原图大小，dtype为int64
             b, h, w = seg_labels.shape
             image, target, seg_labels = image.to(device), target.to(device), seg_labels.to(device)
-            output, cams = model(image)
-            cams_hw = cams.reshape(b, 14, 14, 20).permute(0, 3, 1, 2)
-            cam_show = cams_hw
+            output, cams, attn_w, attn_m = model(image)
+            # cams_hw = cams.reshape(b, 14, 14, 20).permute(0, 3, 1, 2)
+            # cam_show = cams_hw
             #
             # print(cams_hw[0][0])
             # 先sigmoid试一试
-            cams_hw = torch.sigmoid(cams_hw)
+            # cams_hw = torch.sigmoid(cams_hw)
             # 归一化
             # for i in range(cams_hw.shape[0]):
             #     for j in range(cams_hw.shape[1]):
@@ -138,49 +138,92 @@ def val(args):
             #         cams_hw[i][j] = cams_hw[i][j] / torch.max(cams_hw[i][j])
 
             output = torch.sigmoid(output)      # class tokens用于多标签分类
+            max_pred_cls = output.argmax(dim=1).cpu()
             # 计算mAP
             mAP_list = compute_mAP(target, output)
             mAP = mAP + mAP_list
             mean_ap = np.mean(mAP_list)
             mean_ap_all = np.mean(mAP)
             # 计算mIOU
-            # 将20个类别的14*14cam插值回原图大小
-            cam_label = torch.nn.functional.interpolate(cams_hw, size=(h, w), mode='bilinear', align_corners=False)
-            # 设置阈值，将每个类的最大激活区域找出来，其他区域置0
-            high_threshold = 0.916
-            # print(cam_label[0][0])
-            cam_label[cam_label < high_threshold] = 0
-            # 添加背景类
-            bg_label = torch.full((b, 1, h, w), 1e-5, device=device)
-            # 整合背景类与目标类
-            cam_bg_obj = torch.cat((bg_label, cam_label), dim=1)
-            # cam生成的分割预测
-            cam_segPred = torch.argmax(cam_bg_obj, dim=1)
-            # 计算mIOU
-            confmat.update(seg_labels.flatten(), cam_segPred.flatten())
-            cur_step_mean_IOU = confmat.get_mIOU()
-            validate_IOU.append(cur_step_mean_IOU)
-            # 生成cam图用于保存
-            # 思路：20张cam图先取max，再归一化生成  |  先归一化再取max
-            cam_show, cam_indices = cam_show.max(dim=1)
-            cam_show = cam_show.squeeze(0)
-            cam_normed = cam_norm(cam_show)     # 归一化
-            oriImgpath = oriImgFolderpath+str(name[0])+'.jpg'
-            img = cv2.imread(oriImgpath)
-            height, width, _ = img.shape
-            # 生成可视化热力图
-            heatmap = cv2.applyColorMap(cv2.resize(cam_normed, (width, height)), cv2.COLORMAP_JET)
-            result = heatmap * 0.3 + img * 0.5
-            save_cam_path = validate_cam_path+str(name[0])+'_cam.jpg'
-            cv2.imwrite(save_cam_path, result)
-
-
+            # 生成attention map
+            # attention map--------------------------------------------------------------------------------------------------
+            # first, you should return all attention weights  in self-attention model (12 stages), and then stack them.
+            att_mat = torch.stack(attn_w).squeeze(1)  # 12 * 12 * 197 * 768: block * heads * patches * embeddings
+            # 对每一个头做平均（多头其实就是多个卷积核），那就类似于1*1卷积操作
+            att_mat = torch.mean(att_mat, dim=1)  # 12 * 197 * 768: block * patches * embeddings
+            # To account for residual connections, then add an identity matrix to the attention matrix and re-normalize the weights.
+            residual_att = torch.eye(att_mat.size(1))  # 768 * 768 初等矩阵
+            att_mat = att_mat.cpu()
+            aug_att_mat = att_mat + residual_att    # 12 * 197 * 197
+            aug_att_mat = aug_att_mat / aug_att_mat.sum(dim=-1).unsqueeze(-1)   # 12 * 197 * 197
+            # Recursively multiply the weight matrices
+            joint_attentions = torch.zeros(aug_att_mat.size())  # 12 * 197 * 197 零矩阵
+            joint_attentions[0] = aug_att_mat[0]    # 联合注意力矩阵第一个维度=vit第一个block的注意力权重矩阵
+            for n in range(1, aug_att_mat.size(0)):         # 1-11
+                # joint第一个block = att第一个block * joint第零个block  ，就是迭代地累乘权重
+                joint_attentions[n] = torch.matmul(aug_att_mat[n], joint_attentions[n - 1])
+            # Attention from the output token to the input space.
+            v = joint_attentions[-1]        # 取累乘12次的权重矩阵   197 * 197
+            grid_size = int(np.sqrt(aug_att_mat.size(-1)))      # 14
+            mask = v[0, 1:].reshape(grid_size, grid_size).detach().numpy()
+            mask = cv2.resize(mask / mask.max(), (w, h))    # [..., np.newaxis]
 
             # a = []
             # b = a[10]
+            # result = (mask * img).astype("uint8")     # 可视化
+            # attention map--------------------------------------------------------------------------------------------------
+
+
+
+            # # 将20个类别的14*14cam插值回原图大小
+            # cam_label = torch.nn.functional.interpolate(cams_hw, size=(h, w), mode='bilinear', align_corners=False)
+            # # 设置阈值，将每个类的最大激活区域找出来，其他区域置0
+            # high_threshold = 0.916
+            # # print(cam_label[0][0])
+            # cam_label[cam_label < high_threshold] = 0
+            # # 添加背景类
+            # bg_label = torch.full((b, 1, h, w), 1e-5, device=device)
+            # # 整合背景类与目标类
+            # cam_bg_obj = torch.cat((bg_label, cam_label), dim=1)
+            # # cam生成的分割预测
+            # cam_segPred = torch.argmax(cam_bg_obj, dim=1)
+            # # 计算mIOU
+            # confmat.update(seg_labels.flatten(), cam_segPred.flatten())
+            # cur_step_mean_IOU = confmat.get_mIOU()
+            # validate_IOU.append(cur_step_mean_IOU)
+            # # 生成cam图用于保存
+            # # 思路：20张cam图先取max，再归一化生成  |  先归一化再取max
+            # cam_show, cam_indices = cam_show.max(dim=1)
+            # cam_show = cam_show.squeeze(0)
+            # cam_normed = cam_norm(cam_show)     # 归一化
+            # oriImgpath = oriImgFolderpath+str(name[0])+'.jpg'
+            # img = cv2.imread(oriImgpath)
+            # height, width, _ = img.shape
+            # # 生成可视化热力图
+            # heatmap = cv2.applyColorMap(cv2.resize(cam_normed, (width, height)), cv2.COLORMAP_JET)
+            # result = heatmap * 0.3 + img * 0.5
+            # save_cam_path = validate_cam_path+str(name[0])+'_cam.jpg'
+            # cv2.imwrite(save_cam_path, result)
+
+            # 根据mask生成pred_seg
+            high_threshold = 0.4
+            # print(type(mask))
+
+            # print(name)
+            # print(mask)
+            mask[mask < high_threshold] = 0
+            mask[mask >= high_threshold] = max_pred_cls+1
+            # mask = mask.to(device)
+            att_segPred = torch.as_tensor(mask).to(device)
+            # print(att_segPred.dtype)
+            att_segPred = att_segPred.int()
+            # 计算mIOU
+            confmat.update(seg_labels.flatten(), att_segPred.flatten())
+            cur_step_mean_IOU = confmat.get_mIOU()
+            validate_IOU.append(cur_step_mean_IOU)
 
             # 生成seg_label图片用于保存
-            pseudo_res = torch.as_tensor(cam_segPred, dtype=torch.uint8)
+            pseudo_res = torch.as_tensor(att_segPred, dtype=torch.uint8)
             toimg = transforms.ToPILImage()
             mask = toimg(pseudo_res)
             mask.putpalette(pallette)
@@ -228,9 +271,10 @@ if __name__ == '__main__':
 
     same_seeds(0)   # 随机化种子
 
-    # a = torch.tensor(([1, 2, 5], [6, 7, 8]))
+    # a = torch.tensor(([1, 2, 5], [6, 7, 8], [12, 65, 89]))
     # print(a.shape)
-    # b = a.max(dim=1)
+    #
+    # b = a[:, 0:2]
     # print(b)
     # a = []
     # b = a[10]

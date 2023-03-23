@@ -40,3 +40,5 @@ add-----data.py 分割标签的导入
 add-----validate.py seg_res生成分割图，类别颜色标识都是对的，但效果很差\
 ## 2023年3月22日09:36:23
 add-----validate.py high-threshold最佳0.916 pretrained -ep1000
+## 2023年3月23日16:57:22
+mod-----validate.py predict.py添加注意力map，效果较好，但是缺乏类别信息
