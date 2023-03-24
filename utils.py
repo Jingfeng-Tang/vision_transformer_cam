@@ -143,6 +143,8 @@ def generate_pseudo_result(cam, oriimg_path):
 
 def train_one_epoch(model, optimizer, data_loader, device, epoch):
     model.train()
+    local_rank = torch.distributed.get_rank()
+    # print(local_rank)
     loss_function = torch.nn.MultiLabelSoftMarginLoss()
     accu_loss = torch.zeros(1).to(device)  # 累计损失
     optimizer.zero_grad()
@@ -152,7 +154,7 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
     for step, data in enumerate(data_loader):
         names, images, labels = data
         sample_num += images.shape[0]
-        pred, cams, attn_w, attn_m = model(images.to(device))
+        pred, cams, attn_w, attn_m = model(images.to(device, non_blocking=True))
         # pred = torch.nn.functional.softmax(pred, dim=1)
         # pred = torch.sigmoid(pred)
         # if epoch > 495:
@@ -180,7 +182,8 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
         # data_loader.desc = "[train epoch {}] loss: {:.3f}, f1_score: {:.3f}".format(epoch,
         #                                                                             accu_loss.item() / (step + 1),
         #                                                                             f1_score)
-        data_loader.desc = "[train epoch {}] loss: {:.3f}".format(epoch,
+        if local_rank == 1:
+            data_loader.desc = "[train epoch {}] loss: {:.3f}".format(epoch,
                                                                   accu_loss.item() / (step + 1),
                                                                   )
 
@@ -197,6 +200,7 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
 @torch.no_grad()
 def evaluate(model, data_loader, device, epoch, num_classes):
     model.eval()
+    local_rank = torch.distributed.get_rank()
     mAP = []
     # confmat = ConfusionMatrix(num_classes)
     data_loader = tqdm(data_loader, file=sys.stdout)
@@ -216,9 +220,10 @@ def evaluate(model, data_loader, device, epoch, num_classes):
             mean_ap = np.mean(mAP_list)
             mean_ap_all = np.mean(mAP)
             # 计算mIOU
-            data_loader.desc = "[test epoch {}] cur_step_mAP: {:.3f} all_step_mAP: {:.3f}".format(epoch,
-                                                                                                  mean_ap,
-                                                                                                  mean_ap_all)
+            if local_rank == 1:
+                data_loader.desc = "[test epoch {}] cur_step_mAP: {:.3f} all_step_mAP: {:.3f}".format(epoch,
+                                                                                                      mean_ap,
+                                                                                                      mean_ap_all)
 
     return mean_ap_all
 
