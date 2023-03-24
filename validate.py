@@ -125,6 +125,7 @@ def val(args):
             b, h, w = seg_labels.shape
             image, target, seg_labels = image.to(device), target.to(device), seg_labels.to(device)
             output, cams, attn_w, attn_m = model(image)
+
             # cams_hw = cams.reshape(b, 14, 14, 20).permute(0, 3, 1, 2)
             # cam_show = cams_hw
             #

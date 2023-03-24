@@ -152,7 +152,7 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
     for step, data in enumerate(data_loader):
         names, images, labels = data
         sample_num += images.shape[0]
-        pred, cams = model(images.to(device))
+        pred, cams, attn_w, attn_m = model(images.to(device))
         # pred = torch.nn.functional.softmax(pred, dim=1)
         # pred = torch.sigmoid(pred)
         # if epoch > 495:
@@ -206,7 +206,7 @@ def evaluate(model, data_loader, device, epoch, num_classes):
 
             image, target = image.to(device), target.to(device)
 
-            output, cams = model(image)
+            output, cams, attn_w, attn_m = model(image)
 
             output = torch.sigmoid(output)
 

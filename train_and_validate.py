@@ -92,7 +92,9 @@ def main(args):
             del weights_dict[k]
         print(model.load_state_dict(weights_dict, strict=False))
 
+
     if args.freeze_layers:
+        print('freeze')
         for name, para in model.named_parameters():
             # 除head, pre_logits外，其他权重全部冻结
             if "head" not in name and "pre_logits" not in name:
@@ -161,7 +163,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_classes', type=int, default=20, required=True)
     parser.add_argument('--weights', type=str, default='', required=False,
                         help='initial weights path, set to null character if you do not want to load weights')
-    parser.add_argument('--freeze_layers', type=bool, default=False, required=True, help='True:freeze weight')
+    parser.add_argument('--freeze_layers', type=bool, default=False, required=False, help='F:freeze weight')
     # 训练参数
     parser.add_argument('--epochs', type=int, default=1000, required=True)
     parser.add_argument('--batch_size', type=int, default=16, required=True)

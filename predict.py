@@ -66,7 +66,7 @@ def main():
        )
 
     # load image
-    img_name = '2007_003330'
+    img_name = '2007_001289'
     img_path = '/data/c425/tjf/datasets/VOC2012/JPEGImages/'+img_name+'.jpg'
     assert os.path.exists(img_path), "file: '{}' dose not exist.".format(img_path)
     imgo = Image.open(img_path)
@@ -102,8 +102,15 @@ def main():
     # create model
     model = create_model(num_classes=20, has_logits=False).to(device)
     # load model weights
-    model_weight_path = "/data/c425/tjf/vit/weights_pretrained_ep1000/2023-03-21-cur_ep997-bestloss.pth"
-    model.load_state_dict(torch.load(model_weight_path, map_location=device))
+    # model_weight_path = "/data/c425/tjf/vit/weights_pretrained_ep1000/2023-03-21-cur_ep997-bestloss.pth"
+    # model.load_state_dict(torch.load(model_weight_path, map_location=device), strict=False)
+    model_weight_path = "/data/c425/tjf/vit/jx_vit_base_patch16_224_in21k-e5005f0a.pth"
+    weights_dict = torch.load(model_weight_path, map_location=device)
+    del_keys = ['head.weight', 'head.bias']
+    for k in del_keys:
+        del weights_dict[k]
+    print(model.load_state_dict(weights_dict, strict=False))
+
     # load label
     model.eval()
 
@@ -118,7 +125,20 @@ def main():
         # first, you should return all attention matrix in self-attention model (12 stages), and then stack them.
         att_mat = torch.stack(attn_w).squeeze(1)    # 12 * 12 * 197 * 768: block * heads * patches * embeddings
         att_mat = torch.mean(att_mat, dim=1)        # 12 * 197 * 768: block * patches * embeddings
-        print(att_mat.shape)
+        # print(attn_m.shape)
+        for i in range(len(attn_m)):
+            block_i_patch = attn_m[i]
+            feature1 = block_i_patch
+            feature2 = block_i_patch
+            feature1 = F.normalize(feature1).squeeze(0)  # F.normalize只能处理两维的数据，L2归一化
+            feature2 = F.normalize(feature2).squeeze(0)
+            # print(feature2.shape)
+            distance = feature1.mm(feature2.t())  # 计算余弦相似度
+            distance_np = distance.cpu().numpy()
+            plt.subplot(6, 6, 3*i+1)
+            plt.imshow(distance_np)
+            plt.xticks([])
+            plt.yticks([])
 
         # 获得原图与尺寸
         img = cv2.imread(img_path)
@@ -151,30 +171,40 @@ def main():
         # result = (mask * img).astype("uint8")
         # print(mask)
         # print(type(v.numpy()))
-        plt.subplot(4, 4, 13)
-        v_np = v.numpy()
-        v_show = v_np/v_np.max()
-        plt.imshow(v_show)
+
+        # plt.subplot(4, 4, 13)
+        # v_np = v.numpy()
+        # v_show = v_np/v_np.max()
+        # plt.imshow(v_show)
 
         mask = cv2.resize(mask / mask.max(), (width, height))[..., np.newaxis]
         result = (mask * img).astype("uint8")
-        plt.subplot(4, 4, 14)
-        plt.imshow(img)
-        plt.subplot(4, 4, 15)
-        plt.imshow(result)
+        # plt.subplot(4, 4, 14)
+        # plt.imshow(img)
+        # plt.subplot(4, 4, 15)
+        # plt.imshow(result)
 
-        mask_14 = cv2.resize(mask/mask.max(), (14, 14))
-        plt.subplot(4, 4, 16)
-        plt.imshow(mask_14)
+        # mask_14 = cv2.resize(mask/mask.max(), (14, 14))
+        # plt.subplot(4, 4, 16)
+        # plt.imshow(mask_14)
 
         result_12 = []
         for i in range(12):
             v_i = aug_att_mat[i]
             mask_i = v_i[0, 1:].reshape(grid_size, grid_size).detach().numpy()
+            mask_14 = mask_i / mask_i.max()
             mask_i = cv2.resize(mask_i / mask_i.max(), (width, height))[..., np.newaxis]
             result_12.append((mask_i * img).astype("uint8"))
-            plt.subplot(4, 4, i+1)
+
+            plt.subplot(6, 6, 3*i+2)
+            plt.imshow(mask_14)
+            plt.xticks([])
+            plt.yticks([])
+
+            plt.subplot(6, 6, 3 * (i + 1))
             plt.imshow(result_12[i])
+            plt.xticks([])
+            plt.yticks([])
 
 
         # attention map--------------------------------------------------------------------------------------------------
@@ -188,63 +218,63 @@ def main():
         cams = cams.squeeze(0).reshape(14, 14, 20).permute(2, 0, 1)
         # 生成所有种类的热力图
 
-        # 插值生成 pseudo res
-        for i in range(20):
-            cam_orisize = cams[i].cpu()
-            cam_np = np.array(cam_orisize)
-            # np 归一化
-            cam_np = cam_np - np.min(cam_np)
-            cam_np = cam_np / np.max(cam_np)
-            cam_np = np.uint8(255 * cam_np)
-            # 生成可视化热力图
-            heatmap = cv2.applyColorMap(cv2.resize(cam_np, (width, height)), cv2.COLORMAP_JET)
-            result = heatmap * 0.3 + img * 0.5
-            cv2.imwrite(predict_cam_path + img_name+'_CAM_'+CAT_LIST[i]+'__'+str(predict[i].numpy())+'.jpg', result)
+        # # 插值生成 pseudo res
+        # for i in range(20):
+        #     cam_orisize = cams[i].cpu()
+        #     cam_np = np.array(cam_orisize)
+        #     # np 归一化
+        #     cam_np = cam_np - np.min(cam_np)
+        #     cam_np = cam_np / np.max(cam_np)
+        #     cam_np = np.uint8(255 * cam_np)
+        #     # 生成可视化热力图
+        #     heatmap = cv2.applyColorMap(cv2.resize(cam_np, (width, height)), cv2.COLORMAP_JET)
+        #     result = heatmap * 0.3 + img * 0.5
+        #     cv2.imwrite(predict_cam_path + img_name+'_CAM_'+CAT_LIST[i]+'__'+str(predict[i].numpy())+'.jpg', result)
 
 
-        # print(cams.shape)
-        cam = cams[predict_cla]
-        cam_t = cam
-        cam = cam.cpu()
-        cam_np = np.array(cam)
-        # np 归一化
-        cam_np = cam_np - np.min(cam_np)
-        cam_np = cam_np / np.max(cam_np)
-        cam_np = np.uint8(255 * cam_np)
-        # tensor 归一化
-        cam_t = cam_t - torch.min(cam_t)
-        cam_t = cam_t / torch.max(cam_t)
-        cam_t = cam_t.unsqueeze(0)
-        cam_t = cam_t.unsqueeze(0)
-        # print(cam_t)
-        # cam_t = torch.uint8(255 * cam_t)
-        # print(cam_t)
-
-        # 插值生成 pseudo res
-        pseudo_res = F.interpolate(cam_t, size=(height, width), mode='bilinear', align_corners=False)
-        # print(pseudo_res)
-        # pseudo_res ×255   tensro 转int
-        threshold = 0.6
-        pseudo_res[pseudo_res < 0.6] = 0  # 生成掩模，背景部分为0
-        pseudo_res[pseudo_res >= 0.6] = 10  # 生成掩模，背景部分为0
-        # 此时目标为数值，背景为0
-        # plattle
-        pseudo_res = pseudo_res.squeeze(0)
-        pseudo_res = pseudo_res.squeeze(0)
-        pseudo_res = torch.as_tensor(pseudo_res, dtype=torch.uint8)
-
-        # pseudo_res_np = pseudo_res.cpu().detach().numpy()
-        toimg = transforms.ToPILImage()
-        mask = toimg(pseudo_res)
-        # mask = Image.fromarray(pseudo_res_np)
-        # print(mask)
-        mask.putpalette(pallette)
-        mask.save("predict_test_result.png")
-
-        # 生成可视化热力图
-        heatmap = cv2.applyColorMap(cv2.resize(cam_np, (width, height)), cv2.COLORMAP_JET)
-        result = heatmap * 0.3 + img * 0.5
-        cv2.imwrite('predict_CAM.jpg', result)
+        # # print(cams.shape)
+        # cam = cams[predict_cla]
+        # cam_t = cam
+        # cam = cam.cpu()
+        # cam_np = np.array(cam)
+        # # np 归一化
+        # cam_np = cam_np - np.min(cam_np)
+        # cam_np = cam_np / np.max(cam_np)
+        # cam_np = np.uint8(255 * cam_np)
+        # # tensor 归一化
+        # cam_t = cam_t - torch.min(cam_t)
+        # cam_t = cam_t / torch.max(cam_t)
+        # cam_t = cam_t.unsqueeze(0)
+        # cam_t = cam_t.unsqueeze(0)
+        # # print(cam_t)
+        # # cam_t = torch.uint8(255 * cam_t)
+        # # print(cam_t)
+        #
+        # # 插值生成 pseudo res
+        # pseudo_res = F.interpolate(cam_t, size=(height, width), mode='bilinear', align_corners=False)
+        # # print(pseudo_res)
+        # # pseudo_res ×255   tensro 转int
+        # threshold = 0.6
+        # pseudo_res[pseudo_res < 0.6] = 0  # 生成掩模，背景部分为0
+        # pseudo_res[pseudo_res >= 0.6] = 10  # 生成掩模，背景部分为0
+        # # 此时目标为数值，背景为0
+        # # plattle
+        # pseudo_res = pseudo_res.squeeze(0)
+        # pseudo_res = pseudo_res.squeeze(0)
+        # pseudo_res = torch.as_tensor(pseudo_res, dtype=torch.uint8)
+        #
+        # # pseudo_res_np = pseudo_res.cpu().detach().numpy()
+        # toimg = transforms.ToPILImage()
+        # mask = toimg(pseudo_res)
+        # # mask = Image.fromarray(pseudo_res_np)
+        # # print(mask)
+        # mask.putpalette(pallette)
+        # mask.save("predict_test_result.png")
+        #
+        # # 生成可视化热力图
+        # heatmap = cv2.applyColorMap(cv2.resize(cam_np, (width, height)), cv2.COLORMAP_JET)
+        # result = heatmap * 0.3 + img * 0.5
+        # cv2.imwrite('predict_CAM.jpg', result)
 
         # cams----------------------------------------------------------------------------
 
@@ -256,7 +286,6 @@ def main():
         if label_name[i] == 1:
             str_label = str_label + CAT_LIST[i] + ' '
             label_num_count += 1
-    plt.text(10, 10, str_label, fontsize=10, color='green')
 
     str_pred = ''
 
@@ -264,11 +293,20 @@ def main():
     for i in range(label_num_count):
         str_pred = "{}:{:.3}".format(class_indict[str(index[i].item())],
                                      val[i]) + str_pred + ' '
-    plt.title(str_pred)
+
     # for i in range(len(predict)):
     #     print("class: {:10}   prob: {:.3}".format(class_indict[str(i)],
     #                                               predict[i].numpy()))
+
+    plt.xticks([])
+    plt.yticks([])
+    plt.axis('off')
+    plt.text(-1500, -2400, str_label, fontsize=10, color='green')
+    plt.text(-1500, -2300, str_pred, fontsize=10, color='black')
+
+    plt.plot()
     plt.show()
+    # plt.title(str_pred)
 
 
 if __name__ == '__main__':
