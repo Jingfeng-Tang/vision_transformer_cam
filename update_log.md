@@ -44,3 +44,5 @@ add-----validate.py high-threshold最佳0.916 pretrained -ep1000
 mod-----validate.py predict.py添加注意力map，效果较好，但是缺乏类别信息
 ## 2023年3月24日17:08:28
 add-----分布式训练
+## 2023年3月28日08:14:46
+add-----Vit的每个block的attn_weights, 原图, syn_weights可视化

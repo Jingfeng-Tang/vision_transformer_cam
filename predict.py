@@ -23,6 +23,11 @@ CAT_LIST = ['aeroplane', 'bicycle', 'bird', 'boat',
             'sheep', 'sofa', 'train',
             'tvmonitor']
 
+from matplotlib.colors import LinearSegmentedColormap
+clist = [(1,0,0),(0,1,0),(0,0,1),(1,0.5,0),(1,0,0.5),(0.5,1,0)]
+newcmp = LinearSegmentedColormap.from_list('chaos', clist)
+
+
 def bitget(byteval, idx):
     return (byteval & 1 << idx) != 0  # 判断输入字节的idx比特位上是否为1
 
@@ -66,7 +71,7 @@ def main():
        )
 
     # load image
-    img_name = '2007_001289'
+    img_name = '2008_000660'
     img_path = '/data/c425/tjf/datasets/VOC2012/JPEGImages/'+img_name+'.jpg'
     assert os.path.exists(img_path), "file: '{}' dose not exist.".format(img_path)
     imgo = Image.open(img_path)
@@ -104,7 +109,7 @@ def main():
     # load model weights
     # model_weight_path = "/data/c425/tjf/vit/weights_pretrained_ep1000/2023-03-21-cur_ep997-bestloss.pth"
     # model.load_state_dict(torch.load(model_weight_path, map_location=device), strict=False)
-    model_weight_path = "/data/c425/tjf/vit/jx_vit_base_patch16_224_in21k-e5005f0a.pth"
+    model_weight_path = "/data/c425/tjf/vit/weights_pretrained_ep1000_train/2023-03-24-cur_ep999-final.pth"
     weights_dict = torch.load(model_weight_path, map_location=device)
     del_keys = ['head.weight', 'head.bias']
     for k in del_keys:
@@ -135,7 +140,12 @@ def main():
             # print(feature2.shape)
             distance = feature1.mm(feature2.t())  # 计算余弦相似度
             distance_np = distance.cpu().numpy()
-            plt.subplot(6, 6, 3*i+1)
+            if i == 4:
+                print(f'孩子头与猫耳： {distance_np[52][88]}')
+                print(f'孩子头与孩子腰部： {distance_np[52][121]}')
+                print(f'猫腿与猫耳： {distance_np[116][88]}')
+
+            plt.subplot(7, 6, 3*i+1)
             plt.imshow(distance_np)
             plt.xticks([])
             plt.yticks([])
@@ -181,8 +191,11 @@ def main():
         result = (mask * img).astype("uint8")
         # plt.subplot(4, 4, 14)
         # plt.imshow(img)
-        # plt.subplot(4, 4, 15)
-        # plt.imshow(result)
+        plt.subplot(7, 6, 42)
+        plt.imshow(img)
+        plt.imshow(mask*255, alpha=0.4, cmap='rainbow')
+        plt.xticks([])
+        plt.yticks([])
 
         # mask_14 = cv2.resize(mask/mask.max(), (14, 14))
         # plt.subplot(4, 4, 16)
@@ -194,18 +207,24 @@ def main():
             mask_i = v_i[0, 1:].reshape(grid_size, grid_size).detach().numpy()
             mask_14 = mask_i / mask_i.max()
             mask_i = cv2.resize(mask_i / mask_i.max(), (width, height))[..., np.newaxis]
-            result_12.append((mask_i * img).astype("uint8"))
+            # print('--------------------------------------')
+            # result_12.append((mask_i * img).astype("uint8"))
+            result_12.append((mask_i*255).astype("uint8"))
 
-            plt.subplot(6, 6, 3*i+2)
+            plt.subplot(7, 6, 3*i+2)
             plt.imshow(mask_14)
             plt.xticks([])
             plt.yticks([])
 
-            plt.subplot(6, 6, 3 * (i + 1))
-            plt.imshow(result_12[i])
+            plt.subplot(7, 6, 3 * (i + 1))
+            plt.imshow(img)
+            plt.imshow(result_12[i], alpha=0.4, cmap='rainbow')
             plt.xticks([])
             plt.yticks([])
 
+        # 原图
+        plt.subplot(7, 6, 39)
+        plt.imshow(img)
 
         # attention map--------------------------------------------------------------------------------------------------
 
