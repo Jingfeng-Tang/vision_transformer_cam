@@ -10,9 +10,9 @@ import cv2
 from voc12.data import load_image_label_list_from_npy, load_img_name_list
 import torch.nn.functional as F
 from voc12.data import load_image_label_from_xml
+import random
 torch.set_printoptions(threshold=np.inf)
 np.set_printoptions(threshold=np.inf)
-
 
 name_list = load_img_name_list("/data/c425/tjf/vit/voc12/train.txt")
 labels = load_image_label_list_from_npy(name_list)
@@ -47,10 +47,23 @@ def color_map(N=256, normalized=False):
     cmap = cmap / 255 if normalized else cmap
     return cmap
 
+def same_seeds(seed):
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+
+
+
 
 # predict  单张图片预测
 def main():
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     print(device)
 
     # 创建predict_cam保存文件夹
@@ -60,21 +73,21 @@ def main():
 
     data_transform = transforms.Compose(
         [transforms.Resize([224, 224]),
-         # transforms.CenterCrop(224),
          transforms.ToTensor(),
          transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
 
     data_transform_showimg = transforms.Compose(
         [transforms.Resize([224, 224]),
-         # transforms.CenterCrop(224)
          ]
        )
 
     # load image
-    img_name = '2008_000660'
+    img_name = '2008_007428'
     img_path = '/data/c425/tjf/datasets/VOC2012/JPEGImages/'+img_name+'.jpg'
     assert os.path.exists(img_path), "file: '{}' dose not exist.".format(img_path)
-    imgo = Image.open(img_path)
+    imgo = Image.open(img_path).convert("RGB")
+    ori_h = imgo.height
+    ori_w = imgo.width
     # plt.imshow(imgo)
     # [N, C, H, W]
     img = data_transform(imgo)
@@ -84,6 +97,7 @@ def main():
     # plt.imshow(img_show)
     # expand batch dimension
     img = torch.unsqueeze(img, dim=0)
+
 
     # read class_indict
     json_path = './class_indices.json'
@@ -109,7 +123,10 @@ def main():
     # load model weights
     # model_weight_path = "/data/c425/tjf/vit/weights_pretrained_ep1000/2023-03-21-cur_ep997-bestloss.pth"
     # model.load_state_dict(torch.load(model_weight_path, map_location=device), strict=False)
-    model_weight_path = "/data/c425/tjf/vit/weights_pretrained_ep1000_train/2023-03-24-cur_ep999-final.pth"
+    # model_weight_path = "/data/c425/tjf/vit/weights_pretrained_ep1000_train/2023-03-24-cur_ep999-final.pth"
+    # model_weight_path = "/data/c425/tjf/vit/weights/2023-03-30-cur_ep165-bestloss.pth"
+    # model_weight_path = "/data/c425/tjf/vit/weights_pretrained_ep1000_freeze/2023-03-21-cur_ep999-final.pth"
+    model_weight_path = "/data/c425/tjf/vit/weights_8conv/2023-03-30-cur_ep787-bestloss.pth"
     weights_dict = torch.load(model_weight_path, map_location=device)
     del_keys = ['head.weight', 'head.bias']
     for k in del_keys:
@@ -118,19 +135,71 @@ def main():
 
     # load label
     model.eval()
+    model.is_train = False
 
     with torch.no_grad():
         # predict class
-        output, cams, attn_w, attn_m = model(img.to(device))
-        # print(attn_m[0].shape)
-        # print(attn_w[0].shape)
-        # attn_m = attn_m.cpu()
-        # attn_w = attn_w.cpu()
-        # attention map--------------------------------------------------------------------------------------------------
+        output, cams, attn_w, attn_m, objpatcht, drweight = model(img.to(device))
+        # objpatcht = torch.sigmoid(objpatcht)
+        print(objpatcht)
+        # block5 attention map------------------------------------------------------------------------------------------
+        att_mat = torch.stack(attn_w).squeeze(1)  # 12 * 12 * 197 * 197: block * heads * patches * patches
+        att_mat = torch.mean(att_mat, dim=1)  # 12 * 197 * 768: block * patches * embeddings  在heads维度取平均
+        # To account for residual connections, then add an identity matrix to the attention matrix and re-normalize the weights.
+        residual_att = torch.eye(att_mat.size(1))  # 197 * 197 单位矩阵
+        att_mat = att_mat.cpu()     # 12*197*197
+        aug_att_mat = att_mat + residual_att
+        aug_att_mat = aug_att_mat / aug_att_mat.sum(dim=-1).unsqueeze(-1)   # 12*197*197
+        attn_weigths = aug_att_mat[4]   # 197*197 第五个block
+        # 取196
+        mask_i = attn_weigths[0, 1:].detach().numpy()
+        mask_14 = mask_i / mask_i.max()     #  vit给出的196patch的归一化权重
+        # 可视化mask_14 attn_weight
+        threshold = 0.2
+        mask_14_seg = mask_14
+        mask_14_seg[mask_14_seg<threshold] = 0      # 小于阈值，归为背景     # 196
+
+        cnn_weight = drweight[1].data
+        cnn_weight = torch.softmax(cnn_weight, dim=0)
+        choosen_label = torch.argmax(cnn_weight, dim=0)
+        for i in range(mask_14_seg.shape[0]):
+            if mask_14_seg[i] != 0:
+                mask_14_seg[i] = choosen_label[i]
+        mask_14_seg = torch.as_tensor(mask_14_seg, dtype=torch.uint8)
+        mask_14_seg = mask_14_seg.unsqueeze(0).reshape(1, 14, 14)
+        toimg = transforms.ToPILImage()
+        mask = toimg(mask_14_seg)
+        mask.putpalette(pallette)
+        mask.save("predict_mask_14_result.png")
+
+        # mask_14 = torch.tensor(mask_14).unsqueeze(0).cuda()
+        # # 还差196对20的weights
+        # # drweight[1].data.shape            #  20*196   # cnn给出的每个patch对20个类的权重
+        # for i in range(20):
+        #     drweight[1].data[i] = drweight[1].data[i] / drweight[1].data[i].max()
+        #
+        # multipclsattmap = torch.einsum('ij, kj -> ij', drweight[1].data, mask_14)
+        # for i in range(20):
+        #     multipclsattmap[i] = multipclsattmap[i] / multipclsattmap[i].max()
+        # multipclsattmap = multipclsattmap.reshape(20, 14, 14)
+        # multipclsattmap = multipclsattmap.unsqueeze(0).permute(1, 0, 2, 3)
+        # multipclsattmap = F.interpolate(multipclsattmap, size=(ori_h, ori_w), mode='bilinear', align_corners=False)
+        # seg_rres = torch.argmax(multipclsattmap, dim=0)
+        # seg_rres = torch.as_tensor(seg_rres, dtype=torch.uint8)
+        # toimg = transforms.ToPILImage()
+        # mask = toimg(seg_rres)
+        # # mask = Image.fromarray(pseudo_res_np)
+        # # print(mask)
+        # mask.putpalette(pallette)
+        # mask.save("predict_test_result.png")
+        # block5 attention map------------------------------------------------------------------------------------------
+
+
+
+        # attention map-------------------------------------------------------------------------------------------------
         # first, you should return all attention matrix in self-attention model (12 stages), and then stack them.
-        att_mat = torch.stack(attn_w).squeeze(1)    # 12 * 12 * 197 * 768: block * heads * patches * embeddings
-        att_mat = torch.mean(att_mat, dim=1)        # 12 * 197 * 768: block * patches * embeddings
-        # print(attn_m.shape)
+        att_mat = torch.stack(attn_w).squeeze(1)    # 12 * 12 * 197 * 197: block * heads * patches * patches
+        att_mat = torch.mean(att_mat, dim=1)        # 12 * 197 * 197: block * patches * embeddings  在heads维度取平均
         for i in range(len(attn_m)):
             block_i_patch = attn_m[i]
             feature1 = block_i_patch
@@ -140,12 +209,12 @@ def main():
             # print(feature2.shape)
             distance = feature1.mm(feature2.t())  # 计算余弦相似度
             distance_np = distance.cpu().numpy()
-            if i == 4:
-                print(f'孩子头与猫耳： {distance_np[52][88]}')
-                print(f'孩子头与孩子腰部： {distance_np[52][121]}')
-                print(f'猫腿与猫耳： {distance_np[116][88]}')
+            # if i == 4:
+            #     print(f'孩子头与猫头： {distance_np[52][88]}')
+            #     print(f'孩子头与孩子腰部： {distance_np[52][121]}')
+            #     print(f'猫腿与猫头： {distance_np[116][88]}')
 
-            plt.subplot(7, 6, 3*i+1)
+            plt.subplot(7, 6, 3*i+1)        # 所有patch的余弦相似度可视化
             plt.imshow(distance_np)
             plt.xticks([])
             plt.yticks([])
@@ -211,12 +280,12 @@ def main():
             # result_12.append((mask_i * img).astype("uint8"))
             result_12.append((mask_i*255).astype("uint8"))
 
-            plt.subplot(7, 6, 3*i+2)
+            plt.subplot(7, 6, 3*i+2)            # 14*14特征图
             plt.imshow(mask_14)
             plt.xticks([])
             plt.yticks([])
 
-            plt.subplot(7, 6, 3 * (i + 1))
+            plt.subplot(7, 6, 3 * (i + 1))          # 原图加掩膜
             plt.imshow(img)
             plt.imshow(result_12[i], alpha=0.4, cmap='rainbow')
             plt.xticks([])
@@ -230,7 +299,7 @@ def main():
 
 
         output = torch.squeeze(output).cpu()
-        predict = torch.softmax(output, dim=0)
+        predict = torch.sigmoid(output)
         predict_cla = torch.argmax(predict).numpy()
 
         # cams----------------------------------------------------------------------------
@@ -329,4 +398,27 @@ def main():
 
 
 if __name__ == '__main__':
+    # a = torch.tensor(([-1, -2, 5], [10, 20, 30], [12, 65, 89], [40, 50, 60], [70, 80, 90]))
+    # print(a.shape)
+    # label = torch.tensor([1, 0, 1, 0, 0])   # 扩充768，这里3
+    # newlabel = label.unsqueeze(0)
+    # for i in range(3-1):
+    #     newlabel = torch.cat([newlabel, label.unsqueeze(0)], dim=0)
+    #
+    # newlabel = newlabel.transpose(0, 1)
+    # print(newlabel.shape)
+    #
+    #
+    #
+    # patcht = torch.einsum("ij, ij -> ij", newlabel, a)
+    # print(patcht)
+    #
+
+
+
+
+    # a = []
+    # b = a[10]
+
+    same_seeds(0)
     main()

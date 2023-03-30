@@ -92,7 +92,8 @@ def main(args):
                                                batch_size=batch_size,
                                                pin_memory=True,
                                                num_workers=nw,
-                                               sampler=train_sampler
+                                               sampler=train_sampler,
+                                               drop_last=True
                                                )
 
     val_loader = torch.utils.data.DataLoader(val_dataset,
@@ -109,6 +110,7 @@ def main(args):
     # 如果存在权重文件，则加载权重文件
     if args.weights != "":
         assert os.path.exists(args.weights), "weights file: '{}' not exist.".format(args.weights)
+        print(f'load:{args.weights}')
         weights_dict = torch.load(args.weights, map_location=device)
         del_keys = ['head.weight', 'head.bias'] if model.has_logits or ~('pre_logits.fc.weight' in weights_dict)\
             else ['pre_logits.fc.weight', 'pre_logits.fc.bias', 'head.weight', 'head.bias']
@@ -159,12 +161,12 @@ def main(args):
                                                data_loader=train_loader,
                                                device=device,
                                                epoch=epoch)
+
         # validate
         mAP_multiple_class_label = evaluate(model=model, data_loader=val_loader, device=device, epoch=epoch, num_classes=args.num_classes)
 
-        # scheduler.step()
         lrate_scheduler.step(epoch)
-        # print(local_rank)
+
         if local_rank == 1:
             # print('tesorboard')
             tags = ["train_loss", "f1_score", "mAP_multiple_class_label", "learning_rate"]
@@ -200,6 +202,9 @@ if __name__ == '__main__':
     parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/jx_vit_base_patch16_224_in21k-e5005f0a.pth',
                         required=False,
                         help='initial weights path, set to null character if you do not want to load weights')
+    # parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/weights_8conv/2023-03-30-cur_ep787-bestloss.pth',
+    #                     required=False,
+    #                     help='initial weights path, set to null character if you do not want to load weights')
     parser.add_argument('--freeze_layers', type=bool, default=False, required=False, help='F:freeze weight')
     # 训练参数
     parser.add_argument('--epochs', type=int, default=1000, required=False)

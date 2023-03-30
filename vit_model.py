@@ -129,6 +129,59 @@ class Attention(nn.Module):
         return x, weights
 
 
+class mask_Attention(nn.Module):
+    def __init__(self,
+                 dim,   # 输入token的dim
+                 num_heads=8,
+                 qkv_bias=False,
+                 qk_scale=None,
+                 attn_drop_ratio=0.,
+                 proj_drop_ratio=0.):
+        super(mask_Attention, self).__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = qk_scale or head_dim ** -0.5
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop_ratio)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop_ratio)
+
+    def forward(self, x, mask_indices):
+        # [batch_size, num_patches + 1, total_embed_dim]
+        B, N, C = x.shape       # 8*197*768
+
+        # qkv(): -> [batch_size, num_patches + 1, 3 * total_embed_dim]
+        # reshape: -> [batch_size, num_patches + 1, 3, num_heads, embed_dim_per_head]
+        # permute: -> [3, batch_size, num_heads, num_patches + 1, embed_dim_per_head]
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        # qkv 3* batchsize* 12* 197* 64
+        # [batch_size, num_heads, num_patches + 1, embed_dim_per_head]
+        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
+        # print(f'q.shape:{q.shape}')
+        # q 8* 12* 197* 64
+        # transpose: -> [batch_size, num_heads, embed_dim_per_head, num_patches + 1]
+        # @: multiply -> [batch_size, num_heads, num_patches + 1, num_patches + 1]
+        attn = (q @ k.transpose(-2, -1)) * self.scale       # scale 0.125  attn: 8*12*197*197
+        # attn 每个patch和patch之间的注意力
+        attn = attn.softmax(dim=-1)     # attn： 8*12*197*197
+        weights = attn
+        attn = self.attn_drop(attn)
+
+        # @: multiply -> [batch_size, num_heads, num_patches + 1, embed_dim_per_head]
+        # transpose: -> [batch_size, num_patches + 1, num_heads, embed_dim_per_head]
+        # reshape: -> [batch_size, num_patches + 1, total_embed_dim]
+        # # attn： 8*12*197*197      v 8* 12* 197* 64
+        x = (attn @ v)      # 8*12*197*64
+        # print(f'x1.shape:{x.shape}')
+        x = x.transpose(1, 2)      # 8*197*12*64        197个patch（cls）
+        # print(f'x2.shape:{x.shape}')
+        x = x.reshape(B, N, C)      # 8*197*768
+        # print(f'x3.shape:{x.shape}')
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x, weights
+
+
 class Mlp(nn.Module):
     """
     MLP as used in Vision Transformer, MLP-Mixer and related networks
@@ -194,7 +247,7 @@ class VisionTransformer(nn.Module):
                  embed_dim=768, depth=12, num_heads=12, mlp_ratio=4.0, qkv_bias=True,
                  qk_scale=None, representation_size=None, distilled=False, drop_ratio=0.,
                  attn_drop_ratio=0., drop_path_ratio=0., embed_layer=PatchEmbed, norm_layer=None,
-                 act_layer=None):
+                 act_layer=None, is_train=True):
         """
         Args:
             img_size (int, tuple): input image size
@@ -268,6 +321,16 @@ class VisionTransformer(nn.Module):
         self.apply(_init_vit_weights)
 
         self.twelveblocks = []
+        self.patch_d1 = torch.nn.Conv2d(768, 384, kernel_size=1)
+        self.patch_d2 = torch.nn.Conv2d(384, 192, kernel_size=1)
+        self.patch_d3 = torch.nn.Conv2d(192, 96, kernel_size=1)
+        self.patch_d4 = torch.nn.Conv2d(96, 48, kernel_size=1)
+        self.patch_d5 = torch.nn.Conv2d(48, 24, kernel_size=1)
+        self.patch_d6 = torch.nn.Conv2d(24, 12, kernel_size=1)
+        self.patch_d7 = torch.nn.Conv2d(12, 6, kernel_size=1)
+        self.patch_d8 = torch.nn.Conv2d(6, 1, kernel_size=1)
+        self.dim_reduct = nn.Linear(196, 20)
+        self.is_train = is_train
 
     def forward_features(self, x):
         # print(f'label:{label.shape}')
@@ -287,19 +350,19 @@ class VisionTransformer(nn.Module):
         attn_matrix = []
         for i, blk in enumerate(self.blocks):
             x, weights_i = blk(x)
+            if i == 5:
+                # 如果是第五个block，那么mask背景
+                j = 6
             if len(self.blocks) - i <= 12:
                 attn_weights.append(weights_i)
                 attn_matrix.append(x)
 
-        # return x[:, 0:self.num_classes], attn_weights
-
-        #
         # 8*197*768
         x = self.norm(x)
         # -------------------------------------------------------------------------------------------------
         # 获得cam 测试
         patch_tokens = x[:, 1:]         # get patch_tokens
-        # print(f'patch_tokens.shape: {patch_tokens.shape}')      # 8*196*768
+        # 8*196*768
         # get classifier weight
         # cls_patch = self.pooling(patch_tokens, (1, 1))
         # print(f'cls_patch.shape: {cls_patch.shape}')            # 8*1*1
@@ -315,15 +378,97 @@ class VisionTransformer(nn.Module):
         # print(f'cls_weight_test.shape: {cls_weight_test.shape}')  # 5*768
         cams = torch.einsum('ijk,kl->ijl', patch_tokens, cls_weight_test)
         # cam = F.conv2d(patch_tokens_test, cls_weight_test).detach()  # 8*768*14*14  cls.weight:
-        # print(f'cams.shape: {cams.shape}')
         # -------------------------------------------------------------------------------------------------
         if self.dist_token is None:
             return self.pre_logits(x[:, 0]), cams, attn_weights, attn_matrix     # cls token, cams, attn_weights:list 12stage attention blocks weights
         else:
             return x[:, 0], x[:, 1]
 
+    def forward_block5(self, x, attn_matrix, is__train):
+        if is__train:
+            # x是第五个block的权重
+            threshold = 0.6
+            # first, you should return all attention matrix in self-attention model (12 stages), and then stack them.
+            att_mat = torch.stack(x).squeeze(1)  # 12 * 16 * 12 * 197 * 197: block * batchsize * heads * patches * patches
+            att_mat = torch.mean(att_mat, dim=2)  # 12 * 16 * 197 * 197: block * batchsize * patches * patches
+            # To account for residual connections, then add an identity matrix to the attention matrix and re-normalize the weights.
+            residual_att = torch.eye(att_mat.size(2)).cuda()  # 197 * 197 identity matrix
+            aug_att_mat = att_mat + residual_att
+            aug_att_mat = aug_att_mat / aug_att_mat.sum(dim=-1).unsqueeze(-1)   # 12 * 16 * 197 * 197
+            v_i = aug_att_mat[4]    # v_i 第五个block的所有样本的注意力权重   16 * 197 * 197
+            mask_i = v_i[:, 0, 1:]         # 16*196
+            mask_14 = mask_i / mask_i.max()     # 16*196
+            # 获取大于0.25的权重的索引
+            patchTokensIndex = []
+            for i in range(int(mask_14.shape[0])):
+                patchid = torch.gt(mask_14[i], 0.25)
+                patchTokensIndex.append(patchid)
+            patchTokensIndexT = torch.stack(patchTokensIndex).squeeze(1)        # 16*196
+            # attn_matrix 16 * 197 * 768 去除cls token
+            cls_patchTokens = attn_matrix[4]
+            patchtokens = cls_patchTokens[:, 1:, :]     # 16*196*768
+            # 将patchTokensIndexT扩充至768维度
+            patchTokensIndexT = patchTokensIndexT.unsqueeze(2)
+            patchTokensIndexT = patchTokensIndexT.repeat(1, 1, 768)     # 16*196*768
+            objpatcht = torch.einsum("kij, kij -> kij", patchtokens, patchTokensIndexT)     # 16*196*768
+            # 删除全零tensor 并补齐
+            for i in range(objpatcht.shape[0]):
+                nonZeroRows = torch.abs(objpatcht[i]).sum(dim=1) > 0
+                # 删除全零tensor
+                new_objpatcht = objpatcht[i][nonZeroRows]
+                # 补齐
+                # 分母出现0
+                if new_objpatcht.shape[0] == 0:
+                    noobj = torch.zeros((196, 768))
+                    objpatcht[i] = noobj
+                    continue
+                # print(f'new_objpatcht.shape[0]: {new_objpatcht.shape[0]}')
+                i_times = 196 // new_objpatcht.shape[0]
+                j = 196 % new_objpatcht.shape[0]
+                full_objpatcht = new_objpatcht
+                for ai in range(i_times-1):
+                    full_objpatcht = torch.cat([full_objpatcht, new_objpatcht])
+                for aj in range(j):
+                    full_objpatcht = torch.cat([full_objpatcht, new_objpatcht[aj].unsqueeze(0)])
+                objpatcht[i] = full_objpatcht
+            # 此时objpatcht 为全目标特征
+            # print(objpatcht.shape)        #  16*196*768
+            objpatcht = objpatcht.reshape(objpatcht.shape[0], 14, 14, 768).permute(0, 3, 1, 2)
+            # print('*****************111111*************')
+        else:
+            # 去除cls token
+            cls_patchTokens = attn_matrix[4]        # 1*197*768
+            patchTokens = cls_patchTokens[:, 1:, :].reshape(1, 14, 14, 768).permute(0, 3, 1, 2)     # 1*768*14*14
+            objpatcht = patchTokens
+
+
+        # 1*1 卷积降维
+        objpatcht = self.patch_d1(objpatcht)
+        objpatcht = self.patch_d2(objpatcht)
+        objpatcht = self.patch_d3(objpatcht)
+        objpatcht = self.patch_d4(objpatcht)
+        objpatcht = self.patch_d5(objpatcht)
+        objpatcht = self.patch_d6(objpatcht)
+        objpatcht = self.patch_d7(objpatcht)
+        objpatcht = self.patch_d8(objpatcht)
+        objpatcht = objpatcht.reshape(objpatcht.shape[0], 196)
+        objpatcht = self.dim_reduct(objpatcht)      #  16  20
+
+        # print('self.dim_reduct.parameters()----------------------------------------------------')
+        # for name, param in self.dim_reduct.named_parameters():
+        #     print(name)
+        #     print(param.shape)
+        #     print('--param.shape')
+        # # 会循环两次  20 196  20  只要20 196
+        dim_reduct_weight = list(self.dim_reduct.named_parameters())[0]
+        # 最后是要输出目标patch，实现目标语义对齐  0.25
+        return objpatcht, dim_reduct_weight
+
+
     def forward(self, x):
         x, cams, attn_weights, attn_matrix = self.forward_features(x)
+
+        objpatcht, dim_reduct_weight = self.forward_block5(attn_weights, attn_matrix, self.is_train)   # batchsize*20
         if self.head_dist is not None:
             x, x_dist = self.head(x[0]), self.head_dist(x[1])
             if self.training and not torch.jit.is_scripting():
@@ -334,7 +479,7 @@ class VisionTransformer(nn.Module):
         else:
             x = self.head(x)
 
-        return x, cams, attn_weights, attn_matrix
+        return x, cams, attn_weights, attn_matrix, objpatcht, dim_reduct_weight
 
 
 def _init_vit_weights(m):

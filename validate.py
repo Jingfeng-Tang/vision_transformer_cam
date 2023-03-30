@@ -101,7 +101,6 @@ def val(args):
                                              )
 
     model = create_model(num_classes=args.num_classes, has_logits=False).to(device)
-
     # 加载模型权重
     if args.weights != "":
         assert os.path.exists(args.weights), "weights file: '{}' not exist.".format(args.weights)
@@ -112,6 +111,7 @@ def val(args):
     print((str(date)))
     # validate
     model.eval()
+    model.is_train = False
     mAP = []
     confmat = ConfusionMatrix(20)
     data_loader = tqdm(val_loader, file=sys.stdout)
@@ -120,12 +120,14 @@ def val(args):
         validate_IOU = []
         for step, data in enumerate(data_loader):
             name, image, target, seg_labels = data
-            # print(name)
-            # seg_labels为原图大小，dtype为int64
             b, h, w = seg_labels.shape
             image, target, seg_labels = image.to(device), target.to(device), seg_labels.to(device)
-            output, cams, attn_w, attn_m = model(image)
-
+            output, cams, attn_w, attn_m, objpatcht, drweight = model(image)
+            print(name)
+            print(output)
+            a= []
+            b = a[1]
+            # cam-------------------------------------------------------------------------------------------------------
             # cams_hw = cams.reshape(b, 14, 14, 20).permute(0, 3, 1, 2)
             # cam_show = cams_hw
             #
@@ -137,6 +139,7 @@ def val(args):
             #     for j in range(cams_hw.shape[1]):
             #         cams_hw[i][j] = cams_hw[i][j] - torch.min(cams_hw[i][j])
             #         cams_hw[i][j] = cams_hw[i][j] / torch.max(cams_hw[i][j])
+            # cam-------------------------------------------------------------------------------------------------------
 
             output = torch.sigmoid(output)      # class tokens用于多标签分类
             max_pred_cls = output.argmax(dim=1).cpu()
@@ -146,7 +149,7 @@ def val(args):
             mean_ap = np.mean(mAP_list)
             mean_ap_all = np.mean(mAP)
             # 计算mIOU
-            # 生成attention map
+            # 生成attention map 12个block融合
             # attention map--------------------------------------------------------------------------------------------------
             # first, you should return all attention weights  in self-attention model (12 stages), and then stack them.
             att_mat = torch.stack(attn_w).squeeze(1)  # 12 * 12 * 197 * 768: block * heads * patches * embeddings
@@ -172,10 +175,9 @@ def val(args):
             # a = []
             # b = a[10]
             # result = (mask * img).astype("uint8")     # 可视化
-            # attention map--------------------------------------------------------------------------------------------------
+            # attention map---------------------------------------------------------------------------------------------
 
-
-
+            # cam-------------------------------------------------------------------------------------------------------
             # # 将20个类别的14*14cam插值回原图大小
             # cam_label = torch.nn.functional.interpolate(cams_hw, size=(h, w), mode='bilinear', align_corners=False)
             # # 设置阈值，将每个类的最大激活区域找出来，其他区域置0
@@ -205,6 +207,7 @@ def val(args):
             # result = heatmap * 0.3 + img * 0.5
             # save_cam_path = validate_cam_path+str(name[0])+'_cam.jpg'
             # cv2.imwrite(save_cam_path, result)
+            # cam-------------------------------------------------------------------------------------------------------
 
             # 根据mask生成pred_seg
             high_threshold = 0.4
@@ -255,7 +258,8 @@ if __name__ == '__main__':
     # 模型参数
     parser.add_argument('--model_name', type=str, default='vit_base', required=True, help='create model name')
     parser.add_argument('--num_classes', type=int, default=20, required=True)
-    parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/weights_pretarined_ep20/2023-03-19-cur_ep199-bestloss.pth', required=False,
+    parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/weights_8conv/2023-03-30-cur_ep787-bestloss.pth',
+                        required=False,
                         help='initial weights path, set to null character if you do not want to load weights')
     # 验证参数
     parser.add_argument('--batch_size', type=int, default=64, required=True)
