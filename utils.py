@@ -155,7 +155,8 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
     for step, data in enumerate(data_loader):
         names, images, labels = data
         sample_num += images.shape[0]
-        pred, cams, attn_w, attn_m, objpatcht, drweight = model(images.to(device, non_blocking=True))
+        # pred, cams, attn_w, attn_m, objpatcht, drweight = model(images.to(device, non_blocking=True))
+        pred, cams, attn_w, attn_m = model(images.to(device, non_blocking=True))
         # pred = torch.nn.functional.softmax(pred, dim=1)
         # pred = torch.sigmoid(pred)
         # if epoch > 495:
@@ -177,8 +178,8 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
         f1_score = f1_score_i/labels_sum.shape[0]
 
         loss1 = loss_function(pred, labels.to(device))
-        loss2 = loss_function(objpatcht, labels.to(device))
-        loss = 0.3 * loss1 + 0.7 * loss2
+        # loss2 = loss_function(objpatcht, labels.to(device))
+        loss = loss1
         loss.backward()
         accu_loss += loss.detach()
 
@@ -214,27 +215,26 @@ def evaluate(model, data_loader, device, epoch, num_classes):
             name, image, target, seg_labels = data
             # print('name[0]-----------------------------')
             image, target = image.to(device), target.to(device)
-            output, cams, attn_w, attn_m, objpatcht, drweight = model(image)
+            # output, cams, attn_w, attn_m, objpatcht, drweight = model(image)
+            output, cams, attn_w, attn_m = model(image)
             # output = torch.sigmoid(output)
             # 计算final_mAP
             mAP_list = compute_mAP(target, output)
             mAP = mAP + mAP_list
             mean_ap = np.mean(mAP_list)
             mean_ap_all = np.mean(mAP)
-            # 计算b5_mAP
-            b5_mAP_list = compute_mAP(target, objpatcht)
-            b5_mAP = b5_mAP + b5_mAP_list
-            b5_mean_ap = np.mean(b5_mAP_list)
-            b5_mean_ap_all = np.mean(b5_mAP)
+            # # 计算b5_mAP
+            # b5_mAP_list = compute_mAP(target, objpatcht)
+            # b5_mAP = b5_mAP + b5_mAP_list
+            # b5_mean_ap = np.mean(b5_mAP_list)
+            # b5_mean_ap_all = np.mean(b5_mAP)
             # 计算mIOU
             # xx
             if local_rank == 1:
-                data_loader.desc = "[test epoch {}] cur_step_mAP: {:.3f} all_step_mAP: " \
-                                   "{:.3f} b5_cur_step_mAP: {:.3f} b5_all_step_mAP: {:.3f}".format(epoch,
-                                                                                                   mean_ap,
-                                                                                                   mean_ap_all,
-                                                                                                   b5_mean_ap,
-                                                                                                   b5_mean_ap_all)
+                data_loader.desc = "[test epoch {}] cur_step_mAP: {:.3f} all_step_mAP: {:.3f}" .format(epoch,
+                                                                                                 mean_ap,
+                                                                                                 mean_ap_all,
+                                                                                                 )
 
     return mean_ap_all
 

@@ -8,7 +8,10 @@ from collections import OrderedDict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import matplotlib.pyplot as plt
+import numpy as np
+torch.set_printoptions(threshold=np.inf)
+np.set_printoptions(threshold=np.inf)
 
 def drop_path(x, drop_prob: float = 0., training: bool = False):
     """
@@ -93,7 +96,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop_ratio)
 
-    def forward(self, x):
+    def forward(self, x, current_layer, mask_indices):
         # [batch_size, num_patches + 1, total_embed_dim]
         B, N, C = x.shape       # 8*197*768
 
@@ -108,62 +111,37 @@ class Attention(nn.Module):
         # q 8* 12* 197* 64
         # transpose: -> [batch_size, num_heads, embed_dim_per_head, num_patches + 1]
         # @: multiply -> [batch_size, num_heads, num_patches + 1, num_patches + 1]
-        attn = (q @ k.transpose(-2, -1)) * self.scale       # scale 0.125  attn: 8*12*197*197
+        if current_layer <= 4:
+            attn = (q @ k.transpose(-2, -1)) * self.scale       # scale 0.125  attn: bs*12*197*197
+        else:
+            # mask_indices bs*197
+            attn = (q @ k.transpose(-2, -1)) * self.scale  # scale 0.125  attn: bs*12*197*197
+            # print('qkv')
+            # print(attn.shape)
+            # print(mask_indices.shape)
+            mask_indices = mask_indices.unsqueeze(0).repeat(12, 1, 1)
+            # print(mask_indices.shape)
+            # print(mask_indices[0, 0, 1, 0:])
+            # print(attn[0, 0, 1, 0:])
+            attn = attn + mask_indices
+            # print(attn[0, 0, 1, 0:])
+            # print(attn[0][0])
         # attn 每个patch和patch之间的注意力
         attn = attn.softmax(dim=-1)     # attn： 8*12*197*197
-        weights = attn
-        attn = self.attn_drop(attn)
+        # if current_layer == 5:
+        #     for i in range(12):
+        #         attn_show = attn[0][i].cpu().numpy()
+        #         plt.subplot(3, 4, i+1)
+        #         plt.imshow(attn_show)
+        #     plt.show()
+        #
+        #     for i in range(12):
+        #         # 每个头的cls与patch的注意力权重显示
+        #         attn_show_cp = attn[0][i][0].unsqueeze(0).repeat(20, 1).cpu().numpy()
+        #         plt.subplot(3, 4, i + 1)
+        #         plt.imshow(attn_show_cp)
+        #     plt.show()
 
-        # @: multiply -> [batch_size, num_heads, num_patches + 1, embed_dim_per_head]
-        # transpose: -> [batch_size, num_patches + 1, num_heads, embed_dim_per_head]
-        # reshape: -> [batch_size, num_patches + 1, total_embed_dim]
-        # # attn： 8*12*197*197      v 8* 12* 197* 64
-        x = (attn @ v)      # 8*12*197*64
-        # print(f'x1.shape:{x.shape}')
-        x = x.transpose(1, 2)      # 8*197*12*64        197个patch（cls）
-        # print(f'x2.shape:{x.shape}')
-        x = x.reshape(B, N, C)      # 8*197*768
-        # print(f'x3.shape:{x.shape}')
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x, weights
-
-
-class mask_Attention(nn.Module):
-    def __init__(self,
-                 dim,   # 输入token的dim
-                 num_heads=8,
-                 qkv_bias=False,
-                 qk_scale=None,
-                 attn_drop_ratio=0.,
-                 proj_drop_ratio=0.):
-        super(mask_Attention, self).__init__()
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = qk_scale or head_dim ** -0.5
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop_ratio)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop_ratio)
-
-    def forward(self, x, mask_indices):
-        # [batch_size, num_patches + 1, total_embed_dim]
-        B, N, C = x.shape       # 8*197*768
-
-        # qkv(): -> [batch_size, num_patches + 1, 3 * total_embed_dim]
-        # reshape: -> [batch_size, num_patches + 1, 3, num_heads, embed_dim_per_head]
-        # permute: -> [3, batch_size, num_heads, num_patches + 1, embed_dim_per_head]
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        # qkv 3* batchsize* 12* 197* 64
-        # [batch_size, num_heads, num_patches + 1, embed_dim_per_head]
-        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
-        # print(f'q.shape:{q.shape}')
-        # q 8* 12* 197* 64
-        # transpose: -> [batch_size, num_heads, embed_dim_per_head, num_patches + 1]
-        # @: multiply -> [batch_size, num_heads, num_patches + 1, num_patches + 1]
-        attn = (q @ k.transpose(-2, -1)) * self.scale       # scale 0.125  attn: 8*12*197*197
-        # attn 每个patch和patch之间的注意力
-        attn = attn.softmax(dim=-1)     # attn： 8*12*197*197
         weights = attn
         attn = self.attn_drop(attn)
 
@@ -228,11 +206,11 @@ class Block(nn.Module):
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop_ratio)
 
-    def forward(self, x):
+    def forward(self, x, current_layer, mask_indices):
         # step1: norm1 维度不变 8*197*768
         # step2: attn 注意力机制 还是8*197*768
         # step3: + 残差 8*197*768
-        o, weights = self.attn(self.norm1(x))
+        o, weights = self.attn(self.norm1(x), current_layer, mask_indices)
         x = x + self.drop_path(o)
         # step1: norm2 维度不变 8*197*768
         # step2: mlp 注意力机制 还是8*197*768
@@ -333,6 +311,7 @@ class VisionTransformer(nn.Module):
         self.is_train = is_train
 
     def forward_features(self, x):
+        batchsize = x.shape[0]
         # print(f'label:{label.shape}')
         # [B, C, H, W] -> [B, num_patches, embed_dim]
         x = self.patch_embed(x)  # [B, 196, 768]
@@ -348,14 +327,88 @@ class VisionTransformer(nn.Module):
         # x = self.blocks(x)                  # 进入transformer block  此时x 8*197*768
         attn_weights = []
         attn_matrix = []
-        for i, blk in enumerate(self.blocks):
-            x, weights_i = blk(x)
-            if i == 5:
-                # 如果是第五个block，那么mask背景
-                j = 6
+        mask_indices = torch.zeros((batchsize, 197, 197))
+        for i, blk in enumerate(self.blocks):       # 原来12个block，现在5个
+            x, weights_i = blk(x, i, mask_indices)
             if len(self.blocks) - i <= 12:
                 attn_weights.append(weights_i)
                 attn_matrix.append(x)
+            if i >= 4:
+                # print(weights_i.shape)        #  16*12*197*197
+                # 根据第5个weights_i获取mask
+                # weights_i是第五个block的权重
+                att_mat = torch.mean(weights_i, dim=1)  # 16 * 197 * 197: block * batchsize * patches * patches
+                # To account for residual connections, then add an identity matrix to the attention matrix and re-normalize the weights.
+                residual_att = torch.eye(att_mat.size(2)).cuda()  # 197 * 197 identity matrix
+                aug_att_mat = att_mat + residual_att
+                aug_att_mat = aug_att_mat / aug_att_mat.sum(dim=-1).unsqueeze(-1)  # 16 * 197 * 197
+                mask_i = aug_att_mat[:, 0, 1:]  # 16*196
+                mask_14 = mask_i / mask_i.max()  # 16*196
+                # 获取小于0.25的权重的索引
+                patchTokensIndex = []
+                for j in range(int(mask_14.shape[0])):
+                    patchid = torch.lt(mask_14[j], 0.25)
+                    patchid = patchid.int()
+                    patchTokensIndex.append(patchid)
+                mask_indices = torch.stack(patchTokensIndex).squeeze(1)  # 16*196
+                cls_zero = torch.zeros((1, 1)).cuda()
+                mask_indices = torch.cat((cls_zero, mask_indices), dim=1)       # 1 * 197
+                mask_indices = mask_indices.repeat(197, 1)      # 197 * 197
+                mask_indices = mask_indices + mask_indices.permute(1, 0)
+                mask_indices[mask_indices > 1] = 1  # 将相加后的2变成1
+                # print(mask_indices.shape)
+
+                # print(mask_indices)
+                # print(str(i+1)*50)
+                # print(f'当前block被遮住的背景patch个数: {mask_indices.sum(1).item()}')
+                # perdict 可视化使用-------------------------------------------------------------------------------------
+                # 0-255颜色指示
+                # indictor_0_255 = torch.arange(0, 255).unsqueeze(0).repeat(20, 1).cpu().numpy()
+                # plt.subplot(3, 2, 3)
+                # plt.imshow(indictor_0_255)
+                # plt.title('indictor_0_255')
+                # mask_indices_np = mask_indices.cpu().numpy()
+                # plt.subplot(3, 2, 1)
+                # plt.imshow(mask_indices_np)
+
+                # mask_indices = mask_indices.unsqueeze(2).repeat(1, 1, 196)  # 1*196*196
+                # mask_indices_np1 = mask_indices.permute(1, 2, 0).cpu().numpy()
+                # plt.subplot(3, 2, 2)
+                # plt.imshow(mask_indices_np1)
+                # plt.title(str(i+1))
+
+                # perdict 可视化使用-------------------------------------------------------------------------------------
+                # mask_indices = mask_indices + mask_indices.permute(0, 2, 1)
+                # mask_indices_np_per_add = mask_indices.permute(1, 2, 0).cpu().numpy()
+                # plt.subplot(3, 2, 4)
+                # plt.imshow(mask_indices_np_per_add)
+
+                # 这种只屏蔽了patch与patch之间的交互，没有阻止patch与cls token之间的信息交互
+                # cls_1 = torch.zeros((batchsize, 1, 196)).cuda()
+                # mask_indices = torch.cat((cls_1, mask_indices), dim=1)
+                # cls_1_1 = torch.zeros((batchsize, 197, 1)).cuda()
+                # mask_indices = torch.cat((cls_1_1, mask_indices), dim=2)
+                # plt.subplot(3, 2, 5)
+                # plt.imshow(mask_indices.permute(1, 2, 0).cpu().numpy())
+
+                mask_indices = -100 * mask_indices
+                # print(mask_indices.shape)
+                # print(mask_indices[0][0])
+                # plt.subplot(3, 2, 6)
+                # plt.imshow(mask_indices.permute(1, 2, 0).cpu().numpy())
+                # plt.show()
+            if i == 11:
+                # 最后一个block，把注意力权重较高的patch挑出来，我认为这些patch是一种聚类原型，将它们与标签对齐，进行训练。
+                # 这样在eval阶段，对高权重目标patch进行预测可以获得其对应的类别，这些高权重目标patch与其相同类的patch之间的语义相似度
+                # 也非常高
+                pass
+
+
+
+
+        # if len(self.blocks) - i <= 12:
+        #     attn_weights.append(weights_i)
+        #     attn_matrix.append(x)
 
         # 8*197*768
         x = self.norm(x)
@@ -464,11 +517,10 @@ class VisionTransformer(nn.Module):
         # 最后是要输出目标patch，实现目标语义对齐  0.25
         return objpatcht, dim_reduct_weight
 
-
     def forward(self, x):
         x, cams, attn_weights, attn_matrix = self.forward_features(x)
 
-        objpatcht, dim_reduct_weight = self.forward_block5(attn_weights, attn_matrix, self.is_train)   # batchsize*20
+        # objpatcht, dim_reduct_weight = self.forward_block5(attn_weights, attn_matrix, self.is_train)   # batchsize*20
         if self.head_dist is not None:
             x, x_dist = self.head(x[0]), self.head_dist(x[1])
             if self.training and not torch.jit.is_scripting():
@@ -478,8 +530,11 @@ class VisionTransformer(nn.Module):
                 return (x + x_dist) / 2
         else:
             x = self.head(x)
+            # # 获取768-20的权重
+            # cls_head_weights = list(self.head.named_parameters())[0][1].data        # 20*768
 
-        return x, cams, attn_weights, attn_matrix, objpatcht, dim_reduct_weight
+        # return x, cams, attn_weights, attn_matrix, objpatcht, dim_reduct_weight
+        return x, cams, attn_weights, attn_matrix
 
 
 def _init_vit_weights(m):
