@@ -82,7 +82,7 @@ def main():
        )
 
     # load image
-    img_name = '2008_000660'
+    img_name = '2009_004434'
     img_path = '/data/c425/tjf/datasets/VOC2012/JPEGImages/'+img_name+'.jpg'
     assert os.path.exists(img_path), "file: '{}' dose not exist.".format(img_path)
     imgo = Image.open(img_path).convert("RGB")
@@ -124,7 +124,7 @@ def main():
     # model_weight_path = "/data/c425/tjf/vit/weights_pretrained_ep1000/2023-03-21-cur_ep997-bestloss.pth"
     # model.load_state_dict(torch.load(model_weight_path, map_location=device), strict=False)
     # model_weight_path = "/data/c425/tjf/vit/weights_pretrained_ep1000_train/2023-03-24-cur_ep999-final.pth"
-    model_weight_path = "/data/c425/tjf/vit/weights/2023-03-31-cur_ep235-bestloss.pth"
+    model_weight_path = "/data/c425/tjf/vit/weights_head1/2023-04-05-cur_ep78-bestloss.pth"
     # model_weight_path = "/data/c425/tjf/vit/weights_pretrained_ep1000_freeze/2023-03-21-cur_ep999-final.pth"
     # model_weight_path = "/data/c425/tjf/vit/weights_8conv/2023-03-30-cur_ep787-bestloss.pth"
     weights_dict = torch.load(model_weight_path, map_location=device)
@@ -140,7 +140,7 @@ def main():
     with torch.no_grad():
         # predict class
         # output, cams, attn_w, attn_m, objpatcht, drweight = model(img.to(device))
-        output, cams, attn_w, attn_m = model(img.to(device))
+        output, cams, attn_w, attn_m, allbs_hw_p_ts = model(img.to(device))
         # objpatcht = torch.sigmoid(objpatcht)
         # print(objpatcht)
         # # block5 attention map------------------------------------------------------------------------------------------
@@ -299,8 +299,10 @@ def main():
         # attention map--------------------------------------------------------------------------------------------------
 
 
-        output = torch.squeeze(output).cpu()
-        predict = torch.sigmoid(output)
+        # output = torch.squeeze(output).cpu()
+        # predict = torch.sigmoid(output)
+        allbs_hw_p_ts = torch.squeeze(allbs_hw_p_ts).cpu()
+        predict = torch.sigmoid(allbs_hw_p_ts)
         predict_cla = torch.argmax(predict).numpy()
 
         # cams----------------------------------------------------------------------------
@@ -399,14 +401,14 @@ def main():
 
 
 if __name__ == '__main__':
-    a = torch.tensor(([-1, -2, -2], [10, 1, 30], [12, 89, 89], [40, 50, 60], [70, 80, 90]))
+    # a = torch.tensor(([-1, -2, -2], [10, 1, 30], [12, 89, 89], [40, 50, 60], [70, 80, 90]))
     # a = torch.tensor(([1.1, 2.3], [1.1, 4.6]))
-    v, indice = torch.mode(a, dim=1)
-    print(a.shape)
+    a = torch.tensor([0,1])
     print(a)
     #b = torch.softmax(a, dim=0)   # 扩充768，这里3
-    print(v)
-    print(indice)
+    # a = a
+    a[0]=12
+    print(a)
 
 
 

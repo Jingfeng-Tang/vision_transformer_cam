@@ -225,7 +225,6 @@ def evaluate(model, data_loader, device, epoch, num_classes):
             mean_ap_all = np.mean(mAP)
             # # 计算b5_mAP
             allbs_hw_p_ts = torch.sigmoid(allbs_hw_p_ts)
-            print(f'eval====:{allbs_hw_p_ts}')
             b5_mAP_list = compute_mAP(target, allbs_hw_p_ts)
             b5_mAP = b5_mAP + b5_mAP_list
             b5_mean_ap = np.mean(b5_mAP_list)
