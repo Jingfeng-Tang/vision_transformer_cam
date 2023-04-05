@@ -50,3 +50,5 @@ add-----Vit的每个block的attn_weights, 原图, syn_weights可视化
 add-----predict.py 添加same_seed，保持种子一致
 ## 2023年4月2日20:56:54
 add-----昨天已解决注意力再汇聚的问题，在ViT中添加了找类别的思路，先存一版。
+## 2023年4月5日11:41:26
+add-----vit test

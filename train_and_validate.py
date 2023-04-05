@@ -199,12 +199,12 @@ if __name__ == '__main__':
     # 模型参数
     parser.add_argument('--model_name', type=str, default='vit_base', required=False, help='create model name')
     parser.add_argument('--num_classes', type=int, default=20, required=False)
-    parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/jx_vit_base_patch16_224_in21k-e5005f0a.pth',
-                        required=False,
-                        help='initial weights path, set to null character if you do not want to load weights')
-    # parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/weights_8conv/2023-03-30-cur_ep787-bestloss.pth',
+    # parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/jx_vit_base_patch16_224_in21k-e5005f0a.pth',
     #                     required=False,
     #                     help='initial weights path, set to null character if you do not want to load weights')
+    parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/weights_head1/2023-04-05-cur_ep78-bestloss.pth',
+                        required=False,
+                        help='initial weights path, set to null character if you do not want to load weights')
     parser.add_argument('--freeze_layers', type=bool, default=False, required=False, help='F:freeze weight')
     # 训练参数
     parser.add_argument('--epochs', type=int, default=1000, required=False)

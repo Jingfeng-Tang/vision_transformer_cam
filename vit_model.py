@@ -117,9 +117,9 @@ class Attention(nn.Module):
             # mask_indices bs*197
             attn = (q @ k.transpose(-2, -1)) * self.scale  # scale 0.125  attn: bs*12*197*197
             # print('qkv')
-            # print(attn.shape)
+            # print(f'attn.shape: {attn.shape}')
             # print(mask_indices.shape)
-            mask_indices = mask_indices.unsqueeze(0).repeat(12, 1, 1)
+            mask_indices = mask_indices.unsqueeze(1).repeat(1, 12, 1, 1)
             # print(mask_indices.shape)
             # print(mask_indices[0, 0, 1, 0:])
             # print(attn[0, 0, 1, 0:])
@@ -299,15 +299,27 @@ class VisionTransformer(nn.Module):
         self.apply(_init_vit_weights)
 
         self.twelveblocks = []
-        self.patch_d1 = torch.nn.Conv2d(768, 384, kernel_size=1)
-        self.patch_d2 = torch.nn.Conv2d(384, 192, kernel_size=1)
-        self.patch_d3 = torch.nn.Conv2d(192, 96, kernel_size=1)
+        self.patch_d1 = torch.nn.Conv2d(768, 256, kernel_size=1)
+        self.patch_d2 = torch.nn.Conv2d(256, 32, kernel_size=1)
+        self.patch_d3 = torch.nn.Conv2d(32, 1, kernel_size=1)
+
+        self.norm1 = norm_layer(256)
+        self.norm2 = norm_layer(32)
+
+        self.hwp_map_labels = nn.Linear(16, 20)
+
         self.patch_d4 = torch.nn.Conv2d(96, 48, kernel_size=1)
         self.patch_d5 = torch.nn.Conv2d(48, 24, kernel_size=1)
         self.patch_d6 = torch.nn.Conv2d(24, 12, kernel_size=1)
         self.patch_d7 = torch.nn.Conv2d(12, 6, kernel_size=1)
         self.patch_d8 = torch.nn.Conv2d(6, 1, kernel_size=1)
         self.dim_reduct = nn.Linear(196, 20)
+
+        self.head1 = nn.Linear(self.num_features, num_classes)
+
+        self.relu = nn.ReLU()
+        # self.patch_d1 = torch.nn.Conv2d(768, 256, kernel_size=1)
+
         self.is_train = is_train
 
     def forward_features(self, x):
@@ -351,10 +363,12 @@ class VisionTransformer(nn.Module):
                     patchid = patchid.int()
                     patchTokensIndex.append(patchid)
                 mask_indices = torch.stack(patchTokensIndex).squeeze(1)  # 16*196
-                cls_zero = torch.zeros((1, 1)).cuda()
-                mask_indices = torch.cat((cls_zero, mask_indices), dim=1)       # 1 * 197
-                mask_indices = mask_indices.repeat(197, 1)      # 197 * 197
-                mask_indices = mask_indices + mask_indices.permute(1, 0)
+
+                cls_zero = torch.zeros((batchsize, 1)).cuda()
+                mask_indices = torch.cat((cls_zero, mask_indices), dim=1)       # 16 * 197
+                mask_indices = mask_indices.unsqueeze(2).repeat(1, 1, 197)      # 16 * 197 * 197
+                mask_indices = mask_indices + mask_indices.permute(0, 2, 1)
+                # print(f'mask_indices: {mask_indices.shape}')
                 mask_indices[mask_indices > 1] = 1  # 将相加后的2变成1
                 # print(mask_indices.shape)
 
@@ -397,11 +411,98 @@ class VisionTransformer(nn.Module):
                 # plt.subplot(3, 2, 6)
                 # plt.imshow(mask_indices.permute(1, 2, 0).cpu().numpy())
                 # plt.show()
-            if i == 11:
-                # 最后一个block，把注意力权重较高的patch挑出来，我认为这些patch是一种聚类原型，将它们与标签对齐，进行训练。
-                # 这样在eval阶段，对高权重目标patch进行预测可以获得其对应的类别，这些高权重目标patch与其相同类的patch之间的语义相似度
-                # 也非常高
-                pass
+
+        # 最后一个block，把注意力权重较高的patch挑出来，我认为这些patch是一种聚类原型，将它们与标签对齐，进行训练。
+        # 这样在eval阶段，对高权重目标patch进行预测可以获得其对应的类别，这些高权重目标patch与其相同类的patch之间的语义相似度
+        # 也非常高
+        att_mat = torch.mean(weights_i, dim=1)  # 16 * 197 * 197: block * batchsize * patches * patches
+        # To account for residual connections, then add an identity matrix to the attention matrix and re-normalize the weights.
+        residual_att = torch.eye(att_mat.size(2)).cuda()  # 197 * 197 identity matrix
+        aug_att_mat = att_mat + residual_att
+        aug_att_mat = aug_att_mat / aug_att_mat.sum(dim=-1).unsqueeze(-1)  # 16 * 197 * 197
+        mask_i = aug_att_mat[:, 0, 1:]      # 16*196
+        mask_14 = mask_i / mask_i.max()     # 16*196
+        # print(f'x.shape: {x.shape}')      # 16 * 197 * 768
+        allbs_hw_patch = []
+        for j in range(batchsize):
+            # 取top16个patch的index
+            val, index = torch.topk(mask_14[j], 16, dim=0)
+            # high_weight_patch16 = torch.zeros((1, 768), device='cuda:1')     # bs*1*768
+            index = index.squeeze(0)
+            # print(f'index.shape: {index.shape}')
+            high_weight_patch16 = x[j][index[0]+1].unsqueeze(0)
+            # print(f'high_weight_patch16.shape: {high_weight_patch16.shape}')
+            for i in range(15):
+                # print(i)
+                # print(f'high_weight_patch16.shape: {high_weight_patch16.unsqueeze(0).shape}')
+                # print(f'x[j][index[i+1]+1: {x[j][index[i+1]+1].unsqueeze(0).shape}')
+                # print('-------')
+                high_weight_patch16 = torch.cat((high_weight_patch16, x[j][index[i+1]+1].unsqueeze(0)), dim=0)  # 17*768
+                # print(f'cat after high_weight_patch16.shape: {high_weight_patch16.shape}')
+            allbs_hw_patch.append(high_weight_patch16)
+        allbs_hw_p_ts = torch.stack(allbs_hw_patch).squeeze(1)
+        #  print(allbs_hv_p_ts.shape)   # 16*16*768  bs* hwp*features
+        ori_allbs_hw_p_ts = allbs_hw_p_ts       # 16*16*768  bs* hwp * features
+        allbs_hw_p_ts = allbs_hw_p_ts.mean(dim=1)       # 16*768
+        allbs_hw_p_ts = self.head1(allbs_hw_p_ts)       # 768 20
+
+        predcls = torch.sigmoid(allbs_hw_p_ts)
+        print(f'predcls: {predcls}')
+        predcls[predcls >= 0.9] = 1
+        predcls[predcls < 0.9] = 0
+        # print(f'predcls: {predcls}')
+        # print(f'predcls: {predcls.shape}')      # 16*20
+        if not self.is_train:
+            zero_t = torch.zeros((1, 768), device='cuda:1')
+            for l in range(batchsize):
+                print(f'predcls: {predcls}')
+                clsh1_weight = self.head1.weight.data  # 20*768
+                for k in range(20):
+                    if predcls[l][k] == 0:      # 如果不是模型所预测的那个类
+                        clsh1_weight[k] = zero_t        # 将所属权重置0
+                # clsh1_softmax = torch.softmax(clsh1_weight, dim=1)
+                # cls_to_768 = torch.argmax(clsh1_softmax, dim=0)      # 为768个特征赋予类别
+                # print(f'cls_to_768.shape: {cls_to_768}')
+                # 将768个特征与16个patch建立联系（为16个patch赋予类别）
+                # curimg_ori_allbs_hw_p_ts = ori_allbs_hw_p_ts[l]
+                # zero_16_768 = torch.arange(21, 12309, 1, device='cuda:1').reshape(768, 16)
+                # # print(f'zero_16_768: {zero_16_768}')
+                # # 每个特征哪个patch贡献大
+                # contriPatchindex = torch.argmax(curimg_ori_allbs_hw_p_ts, dim=0)
+                # # print(f'contriPatchindex: {contriPatchindex.shape}')  # 16*20
+                # # print(f'contriPatchindex: {contriPatchindex}')
+                # for m in range(768):
+                #     zero_16_768[m][contriPatchindex[m]] = cls_to_768[m]
+                # # print(f'zero_16_768.shape: {zero_16_768}')
+                # patch_to_cls, indice = torch.mode(zero_16_768, dim=0)
+                # # print(f'patch_to_cls.shape: {patch_to_cls.shape}')
+                # # print(f'patch_to_cls: {patch_to_cls}')
+
+
+
+
+        # allbs_hw_p_ts = allbs_hw_p_ts.reshape(batchsize, 4, 4, 768).permute(0, 3, 1, 2)     #  16 * 768 *4 *4
+
+        # allbs_hw_p_ts = self.patch_d1(allbs_hw_p_ts)    # 16*256*4*4
+        # allbs_hw_p_ts = allbs_hw_p_ts.permute(0, 2, 3, 1)       # 16 * 4*4*256
+        # allbs_hw_p_ts = self.norm1(allbs_hw_p_ts)
+        # allbs_hw_p_ts = allbs_hw_p_ts.permute(0, 3, 1, 2)
+        # allbs_hw_p_ts = self.relu(allbs_hw_p_ts)
+        # allbs_hw_p_ts = self.patch_d2(allbs_hw_p_ts)
+        # allbs_hw_p_ts = allbs_hw_p_ts.permute(0, 2, 3, 1)  # 16 * 4*4*256
+        # allbs_hw_p_ts = self.norm2(allbs_hw_p_ts)
+        # allbs_hw_p_ts = allbs_hw_p_ts.permute(0, 3, 1, 2)
+        # allbs_hw_p_ts = self.relu(allbs_hw_p_ts)
+        # allbs_hw_p_ts = self.patch_d3(allbs_hw_p_ts)
+        # allbs_hw_p_ts = self.relu(allbs_hw_p_ts)
+        #
+        # allbs_hw_p_ts = allbs_hw_p_ts.reshape(batchsize, 16)
+        #
+        # allbs_hw_p_ts = self.hwp_map_labels(allbs_hw_p_ts)
+
+
+
+
 
 
 
@@ -433,7 +534,7 @@ class VisionTransformer(nn.Module):
         # cam = F.conv2d(patch_tokens_test, cls_weight_test).detach()  # 8*768*14*14  cls.weight:
         # -------------------------------------------------------------------------------------------------
         if self.dist_token is None:
-            return self.pre_logits(x[:, 0]), cams, attn_weights, attn_matrix     # cls token, cams, attn_weights:list 12stage attention blocks weights
+            return self.pre_logits(x[:, 0]), cams, attn_weights, attn_matrix, allbs_hw_p_ts     # cls token, cams, attn_weights:list 12stage attention blocks weights
         else:
             return x[:, 0], x[:, 1]
 
@@ -518,7 +619,7 @@ class VisionTransformer(nn.Module):
         return objpatcht, dim_reduct_weight
 
     def forward(self, x):
-        x, cams, attn_weights, attn_matrix = self.forward_features(x)
+        x, cams, attn_weights, attn_matrix, allbs_hw_p_ts = self.forward_features(x)
 
         # objpatcht, dim_reduct_weight = self.forward_block5(attn_weights, attn_matrix, self.is_train)   # batchsize*20
         if self.head_dist is not None:
@@ -534,7 +635,7 @@ class VisionTransformer(nn.Module):
             # cls_head_weights = list(self.head.named_parameters())[0][1].data        # 20*768
 
         # return x, cams, attn_weights, attn_matrix, objpatcht, dim_reduct_weight
-        return x, cams, attn_weights, attn_matrix
+        return x, cams, attn_weights, attn_matrix, allbs_hw_p_ts
 
 
 def _init_vit_weights(m):

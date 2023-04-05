@@ -399,22 +399,25 @@ def main():
 
 
 if __name__ == '__main__':
-    # a = torch.tensor(([-1, -2, 5], [10, 20, 30], [12, 65, 89], [40, 50, 60], [70, 80, 90]))
-    # a = torch.tensor(([1, 2], [3, 4]))
-    # print(a)
-    # b = a.permute(1, 0)   # 扩充768，这里3
-    # print(b)
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    # a = []
-    # b = a[10]
+    a = torch.tensor(([-1, -2, -2], [10, 1, 30], [12, 89, 89], [40, 50, 60], [70, 80, 90]))
+    # a = torch.tensor(([1.1, 2.3], [1.1, 4.6]))
+    v, indice = torch.mode(a, dim=1)
+    print(a.shape)
+    print(a)
+    #b = torch.softmax(a, dim=0)   # 扩充768，这里3
+    print(v)
+    print(indice)
+
+
+
+
+
+
+
+
+
+    a = []
+    b = a[10]
 
     same_seeds(0)
     main()

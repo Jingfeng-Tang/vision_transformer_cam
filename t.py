@@ -34,6 +34,7 @@ elif model_id == 3:
     finalconv_name = 'features'
 
 net.eval()
+print(net)
 
 # hook the feature extractor
 features_blobs = []
