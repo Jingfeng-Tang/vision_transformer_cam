@@ -216,7 +216,7 @@ def evaluate(model, data_loader, device, epoch, num_classes):
             # print('name[0]-----------------------------')
             image, target = image.to(device), target.to(device)
             # output, cams, attn_w, attn_m, objpatcht, drweight = model(image)
-            output, cams, attn_w, attn_m, allbs_hw_p_ts = model(image)
+            output, cams, attn_w, attn_m, allbs_hw_p_ts, clsh1_weight = model(image)
             output = torch.sigmoid(output)
             # 计算final_mAP
             mAP_list = compute_mAP(target, output)

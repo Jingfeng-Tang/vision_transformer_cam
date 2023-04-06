@@ -402,13 +402,13 @@ def main():
 
 if __name__ == '__main__':
     # a = torch.tensor(([-1, -2, -2], [10, 1, 30], [12, 89, 89], [40, 50, 60], [70, 80, 90]))
-    # a = torch.tensor(([1.1, 2.3], [1.1, 4.6]))
-    a = torch.tensor([0,1])
+    a = torch.tensor(([1.1, 2.3], [1.1, 4.6]))
+    # a = torch.tensor([0,1])
     print(a)
     #b = torch.softmax(a, dim=0)   # 扩充768，这里3
     # a = a
-    a[0]=12
-    print(a)
+    b = F.normalize(a, dim=1)       # 对行
+    print(b)
 
 
 
