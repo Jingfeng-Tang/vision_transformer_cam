@@ -10,7 +10,7 @@ import sklearn.metrics as metrics
 import numpy as np
 import cv2
 from sklearn.metrics import average_precision_score
-
+import torch.nn.functional as F
 
 def multilabel_score(y_true, y_pred):
     return metrics.f1_score(y_true, y_pred)
@@ -55,20 +55,20 @@ class ConfusionMatrix(object):
         # 计算每个类别的准确率
         acc = torch.diag(h) / h.sum(1)
         # 计算每个类别预测与真实目标的iou
-        iu = torch.diag(h) / (h.sum(1) + h.sum(0) - torch.diag(h)+1)        # +1 防止 nan
+        iu = torch.diag(h) / (h.sum(1) + h.sum(0) - torch.diag(h))
 
         return acc_global, acc, iu
 
     def __str__(self):
         acc_global, acc, iu = self.compute()
         return (
-            'global correct: {:.1f}\n'
+            'global correct: {:.3f}\n'
             'average row correct: {}\n'
             'IoU: {}\n'
-            'mean IoU: {:.1f}').format(
+            'mean IoU: {:.3f}').format(
             acc_global.item() * 100,
-            ['{:.1f}'.format(i) for i in (acc * 100).tolist()],
-            ['{:.1f}'.format(i) for i in (iu * 100).tolist()],
+            ['{:.3f}'.format(i) for i in (acc * 100).tolist()],
+            ['{:.3f}'.format(i) for i in (iu * 100).tolist()],
             iu.mean().item() * 100)
 
     def get_mIOU(self):
@@ -146,7 +146,8 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
     model.is_train = True
     local_rank = torch.distributed.get_rank()
     # print(local_rank)
-    loss_function = torch.nn.MultiLabelSoftMarginLoss()
+    # loss_function = torch.nn.MultiLabelSoftMarginLoss()
+    # loss_function = torch.nn.functional.multilabel_soft_margin_loss()
     accu_loss = torch.zeros(1).to(device)  # 累计损失
     optimizer.zero_grad()
 
@@ -156,7 +157,7 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
         names, images, labels = data
         sample_num += images.shape[0]
         # pred, cams, attn_w, attn_m, objpatcht, drweight = model(images.to(device, non_blocking=True))
-        pred, cams, attn_w, attn_m, allbs_hw_p_ts = model(images.to(device, non_blocking=True))
+        pred, attn_w, attn_m, allbs_hw_p_ts, clsh1_weight_ori, ori_allbs_hw_p_ts = model(images.to(device, non_blocking=True))
         # pred = torch.nn.functional.softmax(pred, dim=1)
         # pred = torch.sigmoid(pred)
         # if epoch > 495:
@@ -165,7 +166,6 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
         labels_sum = labels.sum(dim=1)  # 每个图中有几个类别
         pred_multihot = torch.zeros(pred.shape)  # pred all zero tensor
         for i in range(labels_sum.shape[0]):
-            # ？？？？？？？？？？？？？？？？？
             val, index = torch.topk(pred, labels_sum[i].int(), dim=1)       # 注意这里是不是不需要softmax？？？？？？
             for j in range(labels_sum[i].int()):
                 pred_multihot[i][index[i][j]] = 1
@@ -177,19 +177,21 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch):
             f1_score_i += f1_score_i
         f1_score = f1_score_i/labels_sum.shape[0]
 
-        loss1 = loss_function(pred, labels.to(device))
-        loss2 = loss_function(allbs_hw_p_ts, labels.to(device))
-        loss = 0.5*loss1+0.5*loss2
+        # loss1 = loss_function(pred, labels.to(device))
+        # loss2 = loss_function(allbs_hw_p_ts, labels.to(device))
+        loss1 = F.multilabel_soft_margin_loss(pred, labels.to(device))
+        loss2 = F.multilabel_soft_margin_loss(allbs_hw_p_ts, labels.to(device))
+        loss = loss1 + loss2
         loss.backward()
-        accu_loss += loss.detach()
+        accu_loss += loss.item()
 
         # data_loader.desc = "[train epoch {}] loss: {:.3f}, f1_score: {:.3f}".format(epoch,
         #                                                                             accu_loss.item() / (step + 1),
         #                                                                             f1_score)
         if local_rank == 1:
             data_loader.desc = "[train epoch {}] loss: {:.3f}".format(epoch,
-                                                                  accu_loss.item() / (step + 1),
-                                                                  )
+                                                                      accu_loss.item() / (step + 1),
+                                                                      )
 
         if not torch.isfinite(loss):
             print('WARNING: non-finite loss, ending training ', loss)
@@ -213,10 +215,10 @@ def evaluate(model, data_loader, device, epoch, num_classes):
     with torch.no_grad():
         for step, data in enumerate(data_loader):
             name, image, target, seg_labels = data
-            # print('name[0]-----------------------------')
+            # print(name)
             image, target = image.to(device), target.to(device)
-            # output, cams, attn_w, attn_m, objpatcht, drweight = model(image)
-            output, cams, attn_w, attn_m, allbs_hw_p_ts, clsh1_weight = model(image)
+            # output, attn_w, attn_m, objpatcht, drweight = model(image)
+            output, attn_w, attn_m, allbs_hw_p_ts, clsh1_weight, ori_allbs_hw_p_ts= model(image)
             output = torch.sigmoid(output)
             # 计算final_mAP
             mAP_list = compute_mAP(target, output)
@@ -237,10 +239,10 @@ def evaluate(model, data_loader, device, epoch, num_classes):
                 #                                                                                  mean_ap_all,
                 #                                                                                  )
 
-                data_loader.desc = "[test epoch {}] cur_mAP: {:.3f} all_mAP: {:.3f} cur_16mAP: {:.3f} all_16mAP: {:.3f}".\
-                    format(epoch, mean_ap, mean_ap_all, b5_mean_ap, b5_mean_ap_all)
+                data_loader.desc = "[test epoch {}]  196patch_mAP: {:.3f} 16patch_mAP: {:.3f}".\
+                    format(epoch, mean_ap_all, b5_mean_ap_all)
 
-    return mean_ap_all
+    return mean_ap_all, b5_mean_ap_all
 
 
 def compute_mAP(labels, outputs):

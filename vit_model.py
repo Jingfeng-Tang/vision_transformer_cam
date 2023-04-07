@@ -120,31 +120,10 @@ class Attention(nn.Module):
         else:
             # mask_indices bs*197
             attn = (q @ k.transpose(-2, -1)) * self.scale  # scale 0.125  attn: bs*12*197*197
-            # print('qkv')
-            # print(f'attn.shape: {attn.shape}')
-            # print(mask_indices.shape)
             mask_indices = mask_indices.unsqueeze(1).repeat(1, 12, 1, 1)
-            # print(mask_indices.shape)
-            # print(mask_indices[0, 0, 1, 0:])
-            # print(attn[0, 0, 1, 0:])
             attn = attn + mask_indices
-            # print(attn[0, 0, 1, 0:])
-            # print(attn[0][0])
         # attn 每个patch和patch之间的注意力
         attn = attn.softmax(dim=-1)     # attn： 8*12*197*197
-        # if current_layer == 5:
-        #     for i in range(12):
-        #         attn_show = attn[0][i].cpu().numpy()
-        #         plt.subplot(3, 4, i+1)
-        #         plt.imshow(attn_show)
-        #     plt.show()
-        #
-        #     for i in range(12):
-        #         # 每个头的cls与patch的注意力权重显示
-        #         attn_show_cp = attn[0][i][0].unsqueeze(0).repeat(20, 1).cpu().numpy()
-        #         plt.subplot(3, 4, i + 1)
-        #         plt.imshow(attn_show_cp)
-        #     plt.show()
 
         weights = attn
         attn = self.attn_drop(attn)
@@ -152,13 +131,10 @@ class Attention(nn.Module):
         # @: multiply -> [batch_size, num_heads, num_patches + 1, embed_dim_per_head]
         # transpose: -> [batch_size, num_patches + 1, num_heads, embed_dim_per_head]
         # reshape: -> [batch_size, num_patches + 1, total_embed_dim]
-        # # attn： 8*12*197*197      v 8* 12* 197* 64
+        # attn： 8*12*197*197      v 8* 12* 197* 64
         x = (attn @ v)      # 8*12*197*64
-        # print(f'x1.shape:{x.shape}')
         x = x.transpose(1, 2)      # 8*197*12*64        197个patch（cls）
-        # print(f'x2.shape:{x.shape}')
         x = x.reshape(B, N, C)      # 8*197*768
-        # print(f'x3.shape:{x.shape}')
         x = self.proj(x)
         x = self.proj_drop(x)
         return x, weights
@@ -313,27 +289,12 @@ class VisionTransformer(nn.Module):
         nn.init.trunc_normal_(self.cls_token, std=0.02)
         self.apply(_init_vit_weights)
 
-        self.twelveblocks = []
-        self.patch_d1 = torch.nn.Conv2d(768, 256, kernel_size=1)
-        self.patch_d2 = torch.nn.Conv2d(256, 32, kernel_size=1)
-        self.patch_d3 = torch.nn.Conv2d(32, 1, kernel_size=1)
-
         self.norm1 = norm_layer(256)
         self.norm2 = norm_layer(32)
-
-        self.hwp_map_labels = nn.Linear(16, 20)
-
-        self.patch_d4 = torch.nn.Conv2d(96, 48, kernel_size=1)
-        self.patch_d5 = torch.nn.Conv2d(48, 24, kernel_size=1)
-        self.patch_d6 = torch.nn.Conv2d(24, 12, kernel_size=1)
-        self.patch_d7 = torch.nn.Conv2d(12, 6, kernel_size=1)
-        self.patch_d8 = torch.nn.Conv2d(6, 1, kernel_size=1)
-        self.dim_reduct = nn.Linear(196, 20)
 
         self.head1 = nn.Linear(self.num_features, num_classes)
 
         self.relu = nn.ReLU()
-        # self.patch_d1 = torch.nn.Conv2d(768, 256, kernel_size=1)
 
         self.is_train = is_train
 
@@ -341,8 +302,6 @@ class VisionTransformer(nn.Module):
 
     def forward_features(self, x):
         batchsize = x.shape[0]
-        # block5_obj_index = []
-        # print(f'label:{label.shape}')
         # [B, C, H, W] -> [B, num_patches, embed_dim]
         x = self.patch_embed(x)  # [B, 196, 768]
         # [1, 1, 768] -> [B, 1, 768]
@@ -383,41 +342,15 @@ class VisionTransformer(nn.Module):
                 mask_indices = torch.stack(patchTokensIndex).squeeze(1)  # 16*196   背景1 前景0
                 # print(f'mask_indices: {mask_indices}')
                 block5_obj_index = mask_indices.clone().detach()
-                # print(f'block5_obj_index: {block5_obj_index}')
-                # block5_obj_index = torch.tensor(block5_obj_index, dtype=bool).clone().detach()
                 block5_obj_index = block5_obj_index.type(torch.bool)
-                # print(f'block5_obj_index: {block5_obj_index}')
                 block5_obj_index = ~block5_obj_index
-                # print(f'block5_obj_index: {block5_obj_index}')
-                # block5_obj_index = torch.tensor(block5_obj_index, dtype=int).clone().detach()
                 block5_obj_index = block5_obj_index.type(torch.int)
-                # print(f'block5_obj_index-: {block5_obj_index}')
                 cls_zero = torch.zeros((batchsize, 1)).cuda()
                 mask_indices = torch.cat((cls_zero, mask_indices), dim=1)       # 16 * 197
                 mask_indices = mask_indices.unsqueeze(2).repeat(1, 1, 197)      # 16 * 197 * 197
                 mask_indices = mask_indices + mask_indices.permute(0, 2, 1)
 
                 mask_indices[mask_indices > 1] = 1  # 将相加后的2变成1
-                # print(mask_indices.shape)
-
-                # print(mask_indices)
-                # print(str(i+1)*50)
-                # print(f'当前block被遮住的背景patch个数: {mask_indices.sum(1).item()}')
-                # perdict 可视化使用-------------------------------------------------------------------------------------
-                # 0-255颜色指示
-                # indictor_0_255 = torch.arange(0, 255).unsqueeze(0).repeat(20, 1).cpu().numpy()
-                # plt.subplot(3, 2, 3)
-                # plt.imshow(indictor_0_255)
-                # plt.title('indictor_0_255')
-                # mask_indices_np = mask_indices.cpu().numpy()
-                # plt.subplot(3, 2, 1)
-                # plt.imshow(mask_indices_np)
-
-                # mask_indices = mask_indices.unsqueeze(2).repeat(1, 1, 196)  # 1*196*196
-                # mask_indices_np1 = mask_indices.permute(1, 2, 0).cpu().numpy()
-                # plt.subplot(3, 2, 2)
-                # plt.imshow(mask_indices_np1)
-                # plt.title(str(i+1))
 
                 # perdict 可视化使用-------------------------------------------------------------------------------------
                 # mask_indices = mask_indices + mask_indices.permute(0, 2, 1)
@@ -425,20 +358,7 @@ class VisionTransformer(nn.Module):
                 # plt.subplot(3, 2, 4)
                 # plt.imshow(mask_indices_np_per_add)
 
-                # 这种只屏蔽了patch与patch之间的交互，没有阻止patch与cls token之间的信息交互
-                # cls_1 = torch.zeros((batchsize, 1, 196)).cuda()
-                # mask_indices = torch.cat((cls_1, mask_indices), dim=1)
-                # cls_1_1 = torch.zeros((batchsize, 197, 1)).cuda()
-                # mask_indices = torch.cat((cls_1_1, mask_indices), dim=2)
-                # plt.subplot(3, 2, 5)
-                # plt.imshow(mask_indices.permute(1, 2, 0).cpu().numpy())
-
                 mask_indices = -100 * mask_indices
-                # print(mask_indices.shape)
-                # print(mask_indices[0][0])
-                # plt.subplot(3, 2, 6)
-                # plt.imshow(mask_indices.permute(1, 2, 0).cpu().numpy())
-                # plt.show()
 
         # 最后一个block，把注意力权重较高的patch挑出来，我认为这些patch是一种聚类原型，将它们与标签对齐，进行训练。
         # 这样在eval阶段，对高权重目标patch进行预测可以获得其对应的类别，这些高权重目标patch与其相同类的patch之间的语义相似度
@@ -474,249 +394,23 @@ class VisionTransformer(nn.Module):
         clsh1_weight = self.head1.weight.data  # 20*768
         # 以上是生成16个高权重patch的代码，也需要在前向过程中进行计算
 
-        # 以下代码迁移至validate.py
-
-        # predcls = torch.sigmoid(allbs_hw_p_ts)
-        # # print(f'predcls: {predcls}')
-        # predcls[predcls >= 0.9] = 1
-        # predcls[predcls < 0.9] = 0
-        # # print(f'predcls: {predcls}')
-        # # print(f'predcls: {predcls.shape}')      # 16*20
-        # if not self.is_train:
-        #     zero_t = torch.full((1, 768), -10, device='cuda:1')
-        #     for l in range(batchsize):
-        #         # print(f'predcls: {predcls}')
-        #         clsh1_weight = self.head1.weight.data  # 20*768
-        #         clsh1_weight = clsh1_weight.clone().detach()
-        #         for k in range(20):
-        #             if predcls[l][k] == 0:      # 如果不是模型所预测的那个类
-        #                 clsh1_weight[k] = zero_t        # 将所属权重置0
-        #         # print(f'clsh1_weight.shape: {clsh1_weight.shape}')        20*768
-        #         # clsh1_softmax = torch.softmax(clsh1_weight, dim=0)
-        #         # print(clsh1_softmax)
-        #         cls_to_768 = torch.argmax(clsh1_weight, dim=0)      # 为768个特征赋予类别
-        #         # STEP1: 将768个特征与16个patch建立联系（为16个patch赋予类别）
-        #         curimg_ori_allbs_hw_p_ts = ori_allbs_hw_p_ts[l]
-        #         zero_16_768 = torch.arange(21, 12309, 1, device='cuda:1').reshape(768, 16)
-        #         # print(f'zero_16_768: {zero_16_768}')
-        #         # 每个特征哪个patch贡献大
-        #         contriPatchindex = torch.argmax(curimg_ori_allbs_hw_p_ts, dim=0)
-        #         # print(f'contriPatchindex: {contriPatchindex.shape}')  # 16*20
-        #         # print(f'contriPatchindex: {contriPatchindex}')
-        #         for m in range(768):
-        #             zero_16_768[m][contriPatchindex[m]] = cls_to_768[m]
-        #         # print(f'zero_16_768.shape: {zero_16_768}')
-        #         patch_to_cls, indice = torch.mode(zero_16_768, dim=0)
-        #         # print(f'当前图片的16个hwpatch的分类： {patch_to_cls}')
-        #         # STEP2: patch_to_cls是16个高权重patch所分配的类
-        #         # STEP3: 将block5的mask的obj index与16个patch进行相似度计算，然后softmax，argmax，分配类别
-        #         # block5_obj_index是block5的前景，接下来计算他们与16patch的余弦相似度（先用最后block的x）
-        #         # print(f'x.shape: {x.shape}')      1*197*768
-        #         # print(f'block5_obj_index.shape: {block5_obj_index.shape}')  # 1*196    1前景 0背景
-        #         # print(f'index.shape: {index}')  # 16  index序号
-        #
-        #         # 所有patch的特征
-        #         patchebed = x.squeeze(0)[1:, :]     # 196*768
-        #         # hw patch的特征
-        #         hw_patch_ebed = ori_allbs_hw_p_ts.squeeze(0)    # 16*768
-        #
-        #         # 方法二 将hwp与所有的patch进行相似度计算，确定目标区域 ，插值， argmax
-        #         c_obj_ebed = F.normalize(patchebed, dim=1)      # 196*768
-        #         c_hw_ebed = F.normalize(hw_patch_ebed, dim=1)   # 16*768
-        #         for hwpinx in range(16):
-        #             cos_sim = torch.einsum('ij,jk->ik', c_hw_ebed[hwpinx], c_obj_ebed.t()).reshape(14, 14)
-        #
-        #
-        #
-        #         # 方法一 只将hwp与objp进行相似度计算，确定前景
-        #         # final_cls = torch.zeros(196, device='cuda:1')
-        #         # for objpindex in range(block5_obj_index.shape[1]):      # 循环196个patch
-        #         #     curp_cls = 0
-        #         #     # print(f'----------当前第{objpindex}个patch')
-        #         #     max_cos_sim = -2.0
-        #         #     if block5_obj_index[0][objpindex] == 1:      # 找到目标patch
-        #         #         # print(f'找到index：{objpindex} 为前景patch')
-        #         #         for hwpindex in range(16):
-        #         #             # 计算余弦相似度
-        #         #             # print(f'将该前景patch与高权重patch的相似度做比较')
-        #         #             c_obj_ebed = F.normalize(patchebed[objpindex].unsqueeze(0))
-        #         #             c_hw_ebed = F.normalize(hw_patch_ebed[hwpindex].unsqueeze(0))
-        #         #             cur_cos = c_obj_ebed.mm(c_hw_ebed.t())
-        #         #             # print(f'cur_cos: {cur_cos}')
-        #         #             if cur_cos > max_cos_sim:
-        #         #                 # print(f'找到')
-        #         #                 curp_cls = patch_to_cls[hwpindex]+1
-        #         #                 # print(f'当前patch被分为：{curp_cls} 类')
-        #         #                 # 为当前目标patch所找到类 curp_cls
-        #         #     # print(f'final_cls.shape: {final_cls.shape}')
-        #         #     final_cls[objpindex] = curp_cls       # +1为了修正调色板索引
-        #         #     # print(f'当前的全图patch分类情况：{final_cls} ')
-        #         #
-        #         # # # ---------------------------------可视化目标patch
-        #         # #
-        #         # # final_cls = block5_obj_index.reshape(14, 14)
-        #         # #
-        #         # # seg_rres = torch.as_tensor(final_cls, dtype=torch.uint8)
-        #         # # toimg = transforms.ToPILImage()
-        #         # # mask = toimg(seg_rres)
-        #         # # mask.putpalette(pallette)
-        #         # # self.final_seg_count = self.final_seg_count+1
-        #         # # final_seg_count_str = str(self.final_seg_count)
-        #         # # mask.save("./final_seg/"+final_seg_count_str+".png")
-        #         # #
-        #         # # # ---------------------------------可视化目标patch
-        #         #
-        #         #
-        #         # final_cls = final_cls.reshape(14, 14)
-        #         # # print(f'reshape后当前的全图patch分类情况：{final_cls} ')
-        #         #
-        #         # seg_rres = torch.as_tensor(final_cls, dtype=torch.uint8)
-        #         # # print(f'seg_rres：{seg_rres} ')
-        #         # toimg = transforms.ToPILImage()
-        #         # mask = toimg(seg_rres)
-        #         # mask.putpalette(pallette)
-        #         # self.final_seg_count = self.final_seg_count+1
-        #         # final_seg_count_str = str(self.final_seg_count)
-        #         # mask.save("./final_seg/"+final_seg_count_str+".png")
-        #
-        #
-        #
-        #
-        # # allbs_hw_p_ts = allbs_hw_p_ts.reshape(batchsize, 4, 4, 768).permute(0, 3, 1, 2)     #  16 * 768 *4 *4
-        #
-        # # allbs_hw_p_ts = self.patch_d1(allbs_hw_p_ts)    # 16*256*4*4
-        # # allbs_hw_p_ts = allbs_hw_p_ts.permute(0, 2, 3, 1)       # 16 * 4*4*256
-        # # allbs_hw_p_ts = self.norm1(allbs_hw_p_ts)
-        # # allbs_hw_p_ts = allbs_hw_p_ts.permute(0, 3, 1, 2)
-        # # allbs_hw_p_ts = self.relu(allbs_hw_p_ts)
-        # # allbs_hw_p_ts = self.patch_d2(allbs_hw_p_ts)
-        # # allbs_hw_p_ts = allbs_hw_p_ts.permute(0, 2, 3, 1)  # 16 * 4*4*256
-        # # allbs_hw_p_ts = self.norm2(allbs_hw_p_ts)
-        # # allbs_hw_p_ts = allbs_hw_p_ts.permute(0, 3, 1, 2)
-        # # allbs_hw_p_ts = self.relu(allbs_hw_p_ts)
-        # # allbs_hw_p_ts = self.patch_d3(allbs_hw_p_ts)
-        # # allbs_hw_p_ts = self.relu(allbs_hw_p_ts)
-        # #
-        # # allbs_hw_p_ts = allbs_hw_p_ts.reshape(batchsize, 16)
-        # #
-        # # allbs_hw_p_ts = self.hwp_map_labels(allbs_hw_p_ts)
-        #
         # # if len(self.blocks) - i <= 12:
         # #     attn_weights.append(weights_i)
         # #     attn_matrix.append(x)
 
         # 8*197*768
         x = self.norm(x)
-        # -------------------------------------------------------------------------------------------------
-        # 获得cam 测试
-        patch_tokens = x[:, 1:]         # get patch_tokens
-        # 8*196*768
-        # get classifier weight
-        # cls_patch = self.pooling(patch_tokens, (1, 1))
-        # print(f'cls_patch.shape: {cls_patch.shape}')            # 8*1*1
-        # cls_res = self.head(cls_patch)
-        cls_weight = self.head.weight
-        # print(f'self.head.weight.shape: {self.head.weight.shape}')
-        # patch_tokens_test = patch_tokens.permute(0, 2, 1).reshape(8, 768, 14, 14)   # 输入
-        # print(f'patch_tokens_test.shape: {patch_tokens.shape}')
-        cls_weight_test = cls_weight
-        # cls_weight_test = cls_weight_test.unsqueeze(dim=1).unsqueeze(dim=2)
-        # cls_weight_test = cls_weight_test.repeat(8, 1, 1, 1)
-        cls_weight_test = cls_weight_test.permute(1, 0)
-        # print(f'cls_weight_test.shape: {cls_weight_test.shape}')  # 5*768
-        cams = torch.einsum('ijk,kl->ijl', patch_tokens, cls_weight_test)
-        # cam = F.conv2d(patch_tokens_test, cls_weight_test).detach()  # 8*768*14*14  cls.weight:
-        # -------------------------------------------------------------------------------------------------
+
         if self.dist_token is None:
             # cls token, cams, attn_weights:list 12stage attention blocks weights|allbs_hw_p_ts：高权重patch |clsh1_weight:head1的权重
-            return self.pre_logits(x[:, 0]), cams, attn_weights, attn_matrix, allbs_hw_p_ts, clsh1_weight, ori_allbs_hw_p_ts
+            return self.pre_logits(x[:, 0]), attn_weights, attn_matrix, allbs_hw_p_ts, clsh1_weight, ori_allbs_hw_p_ts
         else:
             return x[:, 0], x[:, 1]
 
-    def forward_block5(self, x, attn_matrix, is__train):
-        if is__train:
-            # x是第五个block的权重
-            threshold = 0.6
-            # first, you should return all attention matrix in self-attention model (12 stages), and then stack them.
-            att_mat = torch.stack(x).squeeze(1)  # 12 * 16 * 12 * 197 * 197: block * batchsize * heads * patches * patches
-            att_mat = torch.mean(att_mat, dim=2)  # 12 * 16 * 197 * 197: block * batchsize * patches * patches
-            # To account for residual connections, then add an identity matrix to the attention matrix and re-normalize the weights.
-            residual_att = torch.eye(att_mat.size(2)).cuda()  # 197 * 197 identity matrix
-            aug_att_mat = att_mat + residual_att
-            aug_att_mat = aug_att_mat / aug_att_mat.sum(dim=-1).unsqueeze(-1)   # 12 * 16 * 197 * 197
-            v_i = aug_att_mat[4]    # v_i 第五个block的所有样本的注意力权重   16 * 197 * 197
-            mask_i = v_i[:, 0, 1:]         # 16*196
-            mask_14 = mask_i / mask_i.max()     # 16*196
-            # 获取大于0.25的权重的索引
-            patchTokensIndex = []
-            for i in range(int(mask_14.shape[0])):
-                patchid = torch.gt(mask_14[i], 0.25)
-                patchTokensIndex.append(patchid)
-            patchTokensIndexT = torch.stack(patchTokensIndex).squeeze(1)        # 16*196
-            # attn_matrix 16 * 197 * 768 去除cls token
-            cls_patchTokens = attn_matrix[4]
-            patchtokens = cls_patchTokens[:, 1:, :]     # 16*196*768
-            # 将patchTokensIndexT扩充至768维度
-            patchTokensIndexT = patchTokensIndexT.unsqueeze(2)
-            patchTokensIndexT = patchTokensIndexT.repeat(1, 1, 768)     # 16*196*768
-            objpatcht = torch.einsum("kij, kij -> kij", patchtokens, patchTokensIndexT)     # 16*196*768
-            # 删除全零tensor 并补齐
-            for i in range(objpatcht.shape[0]):
-                nonZeroRows = torch.abs(objpatcht[i]).sum(dim=1) > 0
-                # 删除全零tensor
-                new_objpatcht = objpatcht[i][nonZeroRows]
-                # 补齐
-                # 分母出现0
-                if new_objpatcht.shape[0] == 0:
-                    noobj = torch.zeros((196, 768))
-                    objpatcht[i] = noobj
-                    continue
-                # print(f'new_objpatcht.shape[0]: {new_objpatcht.shape[0]}')
-                i_times = 196 // new_objpatcht.shape[0]
-                j = 196 % new_objpatcht.shape[0]
-                full_objpatcht = new_objpatcht
-                for ai in range(i_times-1):
-                    full_objpatcht = torch.cat([full_objpatcht, new_objpatcht])
-                for aj in range(j):
-                    full_objpatcht = torch.cat([full_objpatcht, new_objpatcht[aj].unsqueeze(0)])
-                objpatcht[i] = full_objpatcht
-            # 此时objpatcht 为全目标特征
-            # print(objpatcht.shape)        #  16*196*768
-            objpatcht = objpatcht.reshape(objpatcht.shape[0], 14, 14, 768).permute(0, 3, 1, 2)
-            # print('*****************111111*************')
-        else:
-            # 去除cls token
-            cls_patchTokens = attn_matrix[4]        # 1*197*768
-            patchTokens = cls_patchTokens[:, 1:, :].reshape(1, 14, 14, 768).permute(0, 3, 1, 2)     # 1*768*14*14
-            objpatcht = patchTokens
-
-
-        # 1*1 卷积降维
-        objpatcht = self.patch_d1(objpatcht)
-        objpatcht = self.patch_d2(objpatcht)
-        objpatcht = self.patch_d3(objpatcht)
-        objpatcht = self.patch_d4(objpatcht)
-        objpatcht = self.patch_d5(objpatcht)
-        objpatcht = self.patch_d6(objpatcht)
-        objpatcht = self.patch_d7(objpatcht)
-        objpatcht = self.patch_d8(objpatcht)
-        objpatcht = objpatcht.reshape(objpatcht.shape[0], 196)
-        objpatcht = self.dim_reduct(objpatcht)      #  16  20
-
-        # print('self.dim_reduct.parameters()----------------------------------------------------')
-        # for name, param in self.dim_reduct.named_parameters():
-        #     print(name)
-        #     print(param.shape)
-        #     print('--param.shape')
-        # # 会循环两次  20 196  20  只要20 196
-        dim_reduct_weight = list(self.dim_reduct.named_parameters())[0]
-        # 最后是要输出目标patch，实现目标语义对齐  0.25
-        return objpatcht, dim_reduct_weight
 
     def forward(self, x):
-        x, cams, attn_weights, attn_matrix, allbs_hw_p_ts, clsh1_weight, ori_allbs_hw_p_ts = self.forward_features(x)
+        x, attn_weights, attn_matrix, allbs_hw_p_ts, clsh1_weight, ori_allbs_hw_p_ts = self.forward_features(x)
 
-        # objpatcht, dim_reduct_weight = self.forward_block5(attn_weights, attn_matrix, self.is_train)   # batchsize*20
         if self.head_dist is not None:
             x, x_dist = self.head(x[0]), self.head_dist(x[1])
             if self.training and not torch.jit.is_scripting():
@@ -726,11 +420,8 @@ class VisionTransformer(nn.Module):
                 return (x + x_dist) / 2
         else:
             x = self.head(x)
-            # # 获取768-20的权重
-            # cls_head_weights = list(self.head.named_parameters())[0][1].data        # 20*768
 
-        # return x, cams, attn_weights, attn_matrix, objpatcht, dim_reduct_weight
-        return x, cams, attn_weights, attn_matrix, allbs_hw_p_ts, clsh1_weight, ori_allbs_hw_p_ts
+        return x, attn_weights, attn_matrix, allbs_hw_p_ts, clsh1_weight, ori_allbs_hw_p_ts
 
 
 def _init_vit_weights(m):

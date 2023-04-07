@@ -47,6 +47,7 @@ def color_map(N=256, normalized=False):
     cmap = cmap / 255 if normalized else cmap
     return cmap
 
+
 def same_seeds(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -56,9 +57,6 @@ def same_seeds(seed):
     random.seed(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
-
-
-
 
 
 # predict  单张图片预测
@@ -82,22 +80,17 @@ def main():
        )
 
     # load image
-    img_name = '2009_004434'
+    img_name = '2007_003011'
     img_path = '/data/c425/tjf/datasets/VOC2012/JPEGImages/'+img_name+'.jpg'
     assert os.path.exists(img_path), "file: '{}' dose not exist.".format(img_path)
     imgo = Image.open(img_path).convert("RGB")
     ori_h = imgo.height
     ori_w = imgo.width
-    # plt.imshow(imgo)
     # [N, C, H, W]
     img = data_transform(imgo)
     img_show = data_transform_showimg(imgo)
-    # unloader = transforms.ToPILImage()
-    # img_s = unloader(img_show)
-    # plt.imshow(img_show)
     # expand batch dimension
     img = torch.unsqueeze(img, dim=0)
-
 
     # read class_indict
     json_path = './class_indices.json'
@@ -113,10 +106,6 @@ def main():
         pallette = []
         for v in pallette_dict.values():
             pallette += v
-
-    voc12pallettemap = color_map(21)
-
-
 
     # create model
     model = create_model(num_classes=20, has_logits=False).to(device)
@@ -139,10 +128,8 @@ def main():
 
     with torch.no_grad():
         # predict class
-        # output, cams, attn_w, attn_m, objpatcht, drweight = model(img.to(device))
-        output, cams, attn_w, attn_m, allbs_hw_p_ts = model(img.to(device))
-        # objpatcht = torch.sigmoid(objpatcht)
-        # print(objpatcht)
+        output, attn_w, attn_m, allbs_hw_p_ts, clsh1_weight_ori, ori_allbs_hw_p_ts = model(img.to(device))
+
         # # block5 attention map------------------------------------------------------------------------------------------
         # att_mat = torch.stack(attn_w).squeeze(1)  # 12 * 12 * 197 * 197: block * heads * patches * patches
         # att_mat = torch.mean(att_mat, dim=1)  # 12 * 197 * 768: block * patches * embeddings  在heads维度取平均
@@ -305,70 +292,6 @@ def main():
         predict = torch.sigmoid(allbs_hw_p_ts)
         predict_cla = torch.argmax(predict).numpy()
 
-        # cams----------------------------------------------------------------------------
-        cams = cams.squeeze(0).reshape(14, 14, 20).permute(2, 0, 1)
-        # 生成所有种类的热力图
-
-        # # 插值生成 pseudo res
-        # for i in range(20):
-        #     cam_orisize = cams[i].cpu()
-        #     cam_np = np.array(cam_orisize)
-        #     # np 归一化
-        #     cam_np = cam_np - np.min(cam_np)
-        #     cam_np = cam_np / np.max(cam_np)
-        #     cam_np = np.uint8(255 * cam_np)
-        #     # 生成可视化热力图
-        #     heatmap = cv2.applyColorMap(cv2.resize(cam_np, (width, height)), cv2.COLORMAP_JET)
-        #     result = heatmap * 0.3 + img * 0.5
-        #     cv2.imwrite(predict_cam_path + img_name+'_CAM_'+CAT_LIST[i]+'__'+str(predict[i].numpy())+'.jpg', result)
-
-
-        # # print(cams.shape)
-        # cam = cams[predict_cla]
-        # cam_t = cam
-        # cam = cam.cpu()
-        # cam_np = np.array(cam)
-        # # np 归一化
-        # cam_np = cam_np - np.min(cam_np)
-        # cam_np = cam_np / np.max(cam_np)
-        # cam_np = np.uint8(255 * cam_np)
-        # # tensor 归一化
-        # cam_t = cam_t - torch.min(cam_t)
-        # cam_t = cam_t / torch.max(cam_t)
-        # cam_t = cam_t.unsqueeze(0)
-        # cam_t = cam_t.unsqueeze(0)
-        # # print(cam_t)
-        # # cam_t = torch.uint8(255 * cam_t)
-        # # print(cam_t)
-        #
-        # # 插值生成 pseudo res
-        # pseudo_res = F.interpolate(cam_t, size=(height, width), mode='bilinear', align_corners=False)
-        # # print(pseudo_res)
-        # # pseudo_res ×255   tensro 转int
-        # threshold = 0.6
-        # pseudo_res[pseudo_res < 0.6] = 0  # 生成掩模，背景部分为0
-        # pseudo_res[pseudo_res >= 0.6] = 10  # 生成掩模，背景部分为0
-        # # 此时目标为数值，背景为0
-        # # plattle
-        # pseudo_res = pseudo_res.squeeze(0)
-        # pseudo_res = pseudo_res.squeeze(0)
-        # pseudo_res = torch.as_tensor(pseudo_res, dtype=torch.uint8)
-        #
-        # # pseudo_res_np = pseudo_res.cpu().detach().numpy()
-        # toimg = transforms.ToPILImage()
-        # mask = toimg(pseudo_res)
-        # # mask = Image.fromarray(pseudo_res_np)
-        # # print(mask)
-        # mask.putpalette(pallette)
-        # mask.save("predict_test_result.png")
-        #
-        # # 生成可视化热力图
-        # heatmap = cv2.applyColorMap(cv2.resize(cam_np, (width, height)), cv2.COLORMAP_JET)
-        # result = heatmap * 0.3 + img * 0.5
-        # cv2.imwrite('predict_CAM.jpg', result)
-
-        # cams----------------------------------------------------------------------------
-
     label_name = load_image_label_from_xml(img_name, '/data/c425/tjf/datasets/VOC2012/')
 
     str_label = 'GT labels: '
@@ -401,25 +324,16 @@ def main():
 
 
 if __name__ == '__main__':
-    # a = torch.tensor(([-1, -2, -2], [10, 1, 30], [12, 89, 89], [40, 50, 60], [70, 80, 90]))
-    a = torch.tensor(([1.1, 2.3], [1.1, 4.6]))
-    # a = torch.tensor([0,1])
-    print(a)
-    #b = torch.softmax(a, dim=0)   # 扩充768，这里3
-    # a = a
-    b = F.normalize(a, dim=1)       # 对行
-    print(b)
-
-
-
-
-
-
-
-
-
-    a = []
-    b = a[10]
+    # # a = torch.tensor(([-1, -2, -2], [10, 1, 30], [12, 89, 89], [40, 50, 60], [70, 80, 90]))
+    # a = torch.tensor(([1.1, 2.3], [1.1, 4.6]))
+    # # a = torch.tensor([0,1])
+    # print(a)
+    # #b = torch.softmax(a, dim=0)   # 扩充768，这里3
+    # # a = a
+    # b = F.normalize(a, dim=1)       # 对行
+    # print(b)
+    # a = []
+    # b = a[10]
 
     same_seeds(0)
     main()

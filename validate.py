@@ -12,6 +12,7 @@ from tqdm import tqdm
 from utils import compute_mAP, ConfusionMatrix, cam_norm
 from torchvision.transforms import functional as F
 import json
+from sklearn.metrics import confusion_matrix
 import cv2
 import matplotlib.pyplot as plt
 torch.set_printoptions(threshold=np.inf)
@@ -57,7 +58,7 @@ def val(args):
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     # 创建seg_res保存文件夹
-    seg_res_path = './validate_seg_res/'
+    seg_res_path = './validate_seg_pred/'
     if os.path.exists(seg_res_path) is False:
         os.makedirs(seg_res_path)
 
@@ -74,7 +75,6 @@ def val(args):
 
     # 加载调色板
     pallette = load_palette()
-
 
     # 遵循SEAM数据增强操作  目前这样数据增强只是为了可视化，使得cam图map到原图的相应位置
     data_transform = {
@@ -96,7 +96,7 @@ def val(args):
 
     val_loader = torch.utils.data.DataLoader(val_dataset,
                                              batch_size=1,
-                                             shuffle=False,
+                                             shuffle=True,
                                              pin_memory=True,
                                              num_workers=nw,
                                              )
@@ -106,6 +106,7 @@ def val(args):
     if args.weights != "":
         assert os.path.exists(args.weights), "weights file: '{}' not exist.".format(args.weights)
         weights_dict = torch.load(args.weights, map_location=device)
+        print(args.weights)
         print(model.load_state_dict(weights_dict, strict=False))
 
     date = datetime.date.today()
@@ -123,9 +124,10 @@ def val(args):
             name, image, target, seg_labels = data
             b, h, w = seg_labels.shape
             image, target, seg_labels = image.to(device), target.to(device), seg_labels.to(device)
-            output, cams, attn_w, attn_m, allbs_hw_p_ts, clsh1_weight_ori, ori_allbs_hw_p_ts = model(image)
-            print('\n')
-            print(name)
+            output, attn_w, attn_m, allbs_hw_p_ts, clsh1_weight_ori, ori_allbs_hw_p_ts = model(image)
+            # print('\n')
+            # print(name)
+            compute_allbs_hw_p_ts = allbs_hw_p_ts
 
             predcls = torch.sigmoid(allbs_hw_p_ts)  # 16*20
             predcls[predcls >= 0.9] = 1
@@ -138,23 +140,18 @@ def val(args):
                 for k in range(20):
                     if predcls[l][k] == 0:  # 如果不是模型所预测的那个类
                         clsh1_weight[k] = zero_t  # 将所属权重置0
-                # print(f'clsh1_weight.shape: {clsh1_weight.shape}')        20*768
-                # clsh1_softmax = torch.softmax(clsh1_weight, dim=0)
-                # print(clsh1_softmax)
                 cls_to_768 = torch.argmax(clsh1_weight, dim=0)  # 为768个特征赋予类别
                 # STEP1: 将768个特征与16个patch建立联系（为16个patch赋予类别）
                 curimg_ori_allbs_hw_p_ts = ori_allbs_hw_p_ts[l]
                 zero_16_768 = torch.arange(21, 12309, 1, device='cuda:0').reshape(768, 16)
-                # print(f'zero_16_768: {zero_16_768}')
                 # 每个特征哪个patch贡献大
                 contriPatchindex = torch.argmax(curimg_ori_allbs_hw_p_ts, dim=0)
                 # print(f'contriPatchindex: {contriPatchindex.shape}')  # 16*20
-                # print(f'contriPatchindex: {contriPatchindex}')
                 for m in range(768):
                     zero_16_768[m][contriPatchindex[m]] = cls_to_768[m]
                 # print(f'zero_16_768.shape: {zero_16_768}')
                 patch_to_cls, indice = torch.mode(zero_16_768, dim=0)
-                print(f'当前图片的16个hwpatch的分类： {patch_to_cls}')
+                # print(f'当前图片的16个hwpatch的分类： {patch_to_cls}')
                 # STEP2: patch_to_cls是16个高权重patch所分配的类
                 # STEP3: 将block5的mask的obj index与16个patch进行相似度计算，然后softmax，argmax，分配类别
                 # block5_obj_index是block5的前景，接下来计算他们与16patch的余弦相似度（先用最后block的x）
@@ -181,245 +178,111 @@ def val(args):
                     seglabel_16.append(cos_ori_size.squeeze(0).squeeze(0))
                 seglabel_16_t = torch.stack(seglabel_16)
                 final_seg = seglabel_16_t.argmax(dim=0)
+                final_seg_v, inx = seglabel_16_t.max(dim=0)
+                # print(type(final_seg_v))
+                # final_seg_v 是余弦相似度值，如果某个通道是最大的，但是值很低，判定为背景类，生成mask
+                mask_bg_cos_threshold = 0.5
+                final_seg_v[final_seg_v < mask_bg_cos_threshold] = 0
+                final_seg_v[final_seg_v >= mask_bg_cos_threshold] = 1
+
                 # print(f'final_seg.shape: {final_seg}')
                 # 加个偏移量 offset  防止变换后产生冲突
                 offset_mat = torch.full((h, w), 50, device='cuda:0')
                 final_seg = final_seg + offset_mat  # 都是50+的
                 # 获取16pwp的类别映射
-                final_seg[final_seg == 50] = patch_to_cls[0]
-                final_seg[final_seg == 51] = patch_to_cls[1]
-                final_seg[final_seg == 52] = patch_to_cls[2]
-                final_seg[final_seg == 53] = patch_to_cls[3]
-                final_seg[final_seg == 54] = patch_to_cls[4]
-                final_seg[final_seg == 55] = patch_to_cls[5]
-                final_seg[final_seg == 56] = patch_to_cls[6]
-                final_seg[final_seg == 57] = patch_to_cls[7]
-                final_seg[final_seg == 58] = patch_to_cls[8]
-                final_seg[final_seg == 59] = patch_to_cls[9]
-                final_seg[final_seg == 60] = patch_to_cls[10]
-                final_seg[final_seg == 61] = patch_to_cls[11]
-                final_seg[final_seg == 62] = patch_to_cls[12]
-                final_seg[final_seg == 63] = patch_to_cls[13]
-                final_seg[final_seg == 64] = patch_to_cls[14]
-                final_seg[final_seg == 65] = patch_to_cls[15]
-                # print(f'final_seg.shape: {final_seg}')
-                # 已经获取到final_seg了，还需要背景mask
-                # print(f'attn_w[4].shape: {attn_w[4].shape}')
-                # weights_i是第五个block的权重
-                att_mat = torch.mean(attn_w[4], dim=1)  # 1 * 197 * 197: batchsize * patches * patches
-                # print(f'att_mat.shape: {att_mat.shape}')
+                final_seg[final_seg == 50] = patch_to_cls[0]+1
+                final_seg[final_seg == 51] = patch_to_cls[1]+1
+                final_seg[final_seg == 52] = patch_to_cls[2]+1
+                final_seg[final_seg == 53] = patch_to_cls[3]+1
+                final_seg[final_seg == 54] = patch_to_cls[4]+1
+                final_seg[final_seg == 55] = patch_to_cls[5]+1
+                final_seg[final_seg == 56] = patch_to_cls[6]+1
+                final_seg[final_seg == 57] = patch_to_cls[7]+1
+                final_seg[final_seg == 58] = patch_to_cls[8]+1
+                final_seg[final_seg == 59] = patch_to_cls[9]+1
+                final_seg[final_seg == 60] = patch_to_cls[10]+1
+                final_seg[final_seg == 61] = patch_to_cls[11]+1
+                final_seg[final_seg == 62] = patch_to_cls[12]+1
+                final_seg[final_seg == 63] = patch_to_cls[13]+1
+                final_seg[final_seg == 64] = patch_to_cls[14]+1
+                final_seg[final_seg == 65] = patch_to_cls[15]+1
+                # 已经获取到final_seg了，还需要背景mask--------------------------------------------------------------------
+
+                # # 取第五个block权重来分割前景背景--------------------------------------------------------------------------
+                # # weights_i是第五个block的权重
+                # # print(f'attn_w[4].shape: {attn_w[4].shape}')      # 1*12*197*197
+                # att_mat = torch.mean(attn_w[4], dim=1)  # 1 * 197 * 197: batchsize * patches * patches
+                # # print(f'att_mat.shape: {att_mat.shape}')
+                # # To account for residual connections, then add an identity matrix to the attention matrix and re-normalize the weights.
+                # residual_att = torch.eye(att_mat.size(2)).cuda()  # 197 * 197 identity matrix
+                # aug_att_mat = att_mat + residual_att
+                # aug_att_mat = aug_att_mat / aug_att_mat.sum(dim=-1).unsqueeze(-1)  # 16 * 197 * 197
+                # mask_i = aug_att_mat[:, 0, 1:]  # 1*196
+                # mask_14 = mask_i / mask_i.max()  # 1*196
+                # # 取第五个block权重来分割前景背景--------------------------------------------------------------------------
+
+                # 取第6-12个block权重来分割前景背景--------------------------------------------------------------------------
+                att_mat = torch.stack(attn_w).squeeze(1)        # 12*12*197*197  block*head*
+                # 取6-12个blocks
+                att_mat = att_mat[5:, :, :, :]      # 7*12*197*197
+                att_mat = torch.mean(att_mat, dim=0)    # 12*197*197
+                att_mat = torch.mean(att_mat, dim=0).unsqueeze(0)  # 1 * 197 * 197: batchsize * patches * patches
                 # To account for residual connections, then add an identity matrix to the attention matrix and re-normalize the weights.
                 residual_att = torch.eye(att_mat.size(2)).cuda()  # 197 * 197 identity matrix
                 aug_att_mat = att_mat + residual_att
                 aug_att_mat = aug_att_mat / aug_att_mat.sum(dim=-1).unsqueeze(-1)  # 16 * 197 * 197
                 mask_i = aug_att_mat[:, 0, 1:]  # 1*196
                 mask_14 = mask_i / mask_i.max()  # 1*196
+                # 取第6-12个block权重来分割前景背景--------------------------------------------------------------------------
+
                 # 插值回原图大小，然后设置阈值
                 bg_ori_size = torch.nn.functional.interpolate(mask_14.reshape(14, 14).unsqueeze(0).unsqueeze(0),
                                                               size=(h, w), mode='bilinear', align_corners=False)
                 bg_ori_size = bg_ori_size.squeeze(0).squeeze(0)
-                print(f'bg_ori_size.shape: {bg_ori_size.shape}')
+                # print(f'bg_ori_size.shape: {bg_ori_size.shape}')
                 # 获取小于0.25的权重的索引
-                bg_ori_size[bg_ori_size < 0.25] = 0
-                bg_ori_size[bg_ori_size >= 0.25] = 1
+                bg_threshold = 0.05
+                bg_ori_size[bg_ori_size < bg_threshold] = 0
+                bg_ori_size[bg_ori_size >= bg_threshold] = 1
 
-                # # 可视化每张图
-                # show_seg = seg_lab.squeeze(0).squeeze(0).cpu().numpy()
-                # plt.imshow(show_seg)
-                # plt.show()
+                mask_final_fg = torch.einsum('ij,ij->ij', final_seg_v, bg_ori_size)
 
-                # 方法一 只将hwp与objp进行相似度计算，确定前景
-                # final_cls = torch.zeros(196, device='cuda:1')
-                # for objpindex in range(block5_obj_index.shape[1]):      # 循环196个patch
-                #     curp_cls = 0
-                #     # print(f'----------当前第{objpindex}个patch')
-                #     max_cos_sim = -2.0
-                #     if block5_obj_index[0][objpindex] == 1:      # 找到目标patch
-                #         # print(f'找到index：{objpindex} 为前景patch')
-                #         for hwpindex in range(16):
-                #             # 计算余弦相似度
-                #             # print(f'将该前景patch与高权重patch的相似度做比较')
-                #             c_obj_ebed = F.normalize(patchebed[objpindex].unsqueeze(0))
-                #             c_hw_ebed = F.normalize(hw_patch_ebed[hwpindex].unsqueeze(0))
-                #             cur_cos = c_obj_ebed.mm(c_hw_ebed.t())
-                #             # print(f'cur_cos: {cur_cos}')
-                #             if cur_cos > max_cos_sim:
-                #                 # print(f'找到')
-                #                 curp_cls = patch_to_cls[hwpindex]+1
-                #                 # print(f'当前patch被分为：{curp_cls} 类')
-                #                 # 为当前目标patch所找到类 curp_cls
-                #     # print(f'final_cls.shape: {final_cls.shape}')
-                #     final_cls[objpindex] = curp_cls       # +1为了修正调色板索引
-                #     # print(f'当前的全图patch分类情况：{final_cls} ')
-                #
-                # # # ---------------------------------可视化目标patch
-                # #
-                # # final_cls = block5_obj_index.reshape(14, 14)
-                # #
-                # # seg_rres = torch.as_tensor(final_cls, dtype=torch.uint8)
-                # # toimg = transforms.ToPILImage()
-                # # mask = toimg(seg_rres)
-                # # mask.putpalette(pallette)
-                # # self.final_seg_count = self.final_seg_count+1
-                # # final_seg_count_str = str(self.final_seg_count)
-                # # mask.save("./final_seg/"+final_seg_count_str+".png")
-                # #
-                # # # ---------------------------------可视化目标patch
-                #
-                #
-                # final_cls = final_cls.reshape(14, 14)
-                # # print(f'reshape后当前的全图patch分类情况：{final_cls} ')
-                #
-                # seg_rres = torch.as_tensor(final_cls, dtype=torch.uint8)
-                # # print(f'seg_rres：{seg_rres} ')
-                # toimg = transforms.ToPILImage()
-                # mask = toimg(seg_rres)
-                # mask.putpalette(pallette)
-                # self.final_seg_count = self.final_seg_count+1
-                # final_seg_count_str = str(self.final_seg_count)
-                # mask.save("./final_seg/"+final_seg_count_str+".png")
+                # # 显示背景与前景的分割
+                toimg = transforms.ToPILImage()
+                # seg_fb = torch.as_tensor(bg_ori_size, dtype=torch.uint8)
+                # seg_fb_save = toimg(seg_fb)
+                # seg_fb_save.putpalette(pallette)
+                # seg_fb_save.save("./validate_seg_pred/"+name[0]+'___bg'+".png")
 
-            # allbs_hw_p_ts = allbs_hw_p_ts.reshape(batchsize, 4, 4, 768).permute(0, 3, 1, 2)     #  16 * 768 *4 *4
+                final_seg_res = torch.einsum('ij,ij->ij', final_seg, mask_final_fg)
+                seg_obj = torch.as_tensor(final_seg_res, dtype=torch.uint8)
 
-            # allbs_hw_p_ts = self.patch_d1(allbs_hw_p_ts)    # 16*256*4*4
-            # allbs_hw_p_ts = allbs_hw_p_ts.permute(0, 2, 3, 1)       # 16 * 4*4*256
-            # allbs_hw_p_ts = self.norm1(allbs_hw_p_ts)
-            # allbs_hw_p_ts = allbs_hw_p_ts.permute(0, 3, 1, 2)
-            # allbs_hw_p_ts = self.relu(allbs_hw_p_ts)
-            # allbs_hw_p_ts = self.patch_d2(allbs_hw_p_ts)
-            # allbs_hw_p_ts = allbs_hw_p_ts.permute(0, 2, 3, 1)  # 16 * 4*4*256
-            # allbs_hw_p_ts = self.norm2(allbs_hw_p_ts)
-            # allbs_hw_p_ts = allbs_hw_p_ts.permute(0, 3, 1, 2)
-            # allbs_hw_p_ts = self.relu(allbs_hw_p_ts)
-            # allbs_hw_p_ts = self.patch_d3(allbs_hw_p_ts)
-            # allbs_hw_p_ts = self.relu(allbs_hw_p_ts)
-            #
-            # allbs_hw_p_ts = allbs_hw_p_ts.reshape(batchsize, 16)
-            #
-            # allbs_hw_p_ts = self.hwp_map_labels(allbs_hw_p_ts)
-
-            # if len(self.blocks) - i <= 12:
-            #     attn_weights.append(weights_i)
-            #     attn_matrix.append(x)
+                seg_obj_save = toimg(seg_obj)
+                seg_obj_save.putpalette(pallette)
+                # seg_obj_save.save("./final_seg/"+name[0]+".png")
 
 
-            # cam-------------------------------------------------------------------------------------------------------
-            # cams_hw = cams.reshape(b, 14, 14, 20).permute(0, 3, 1, 2)
-            # cam_show = cams_hw
-            #
-            # print(cams_hw[0][0])
-            # 先sigmoid试一试
-            # cams_hw = torch.sigmoid(cams_hw)
-            # 归一化
-            # for i in range(cams_hw.shape[0]):
-            #     for j in range(cams_hw.shape[1]):
-            #         cams_hw[i][j] = cams_hw[i][j] - torch.min(cams_hw[i][j])
-            #         cams_hw[i][j] = cams_hw[i][j] / torch.max(cams_hw[i][j])
-            # cam-------------------------------------------------------------------------------------------------------
+            # output = torch.sigmoid(output)      # class tokens用于多标签分类
+            output = torch.sigmoid(compute_allbs_hw_p_ts)      # 16hwp用于多标签分类
 
-            output = torch.sigmoid(output)      # class tokens用于多标签分类
-            max_pred_cls = output.argmax(dim=1).cpu()
+
             # 计算mAP
             mAP_list = compute_mAP(target, output)
             mAP = mAP + mAP_list
             mean_ap = np.mean(mAP_list)
             mean_ap_all = np.mean(mAP)
+
             # 计算mIOU
-            # 生成attention map 12个block融合
-            # attention map--------------------------------------------------------------------------------------------------
-            # first, you should return all attention weights  in self-attention model (12 stages), and then stack them.
-            att_mat = torch.stack(attn_w).squeeze(1)  # 12 * 12 * 197 * 768: block * heads * patches * embeddings
-            # 对每一个头做平均（多头其实就是多个卷积核），那就类似于1*1卷积操作
-            att_mat = torch.mean(att_mat, dim=1)  # 12 * 197 * 768: block * patches * embeddings
-            # To account for residual connections, then add an identity matrix to the attention matrix and re-normalize the weights.
-            residual_att = torch.eye(att_mat.size(1))  # 768 * 768 初等矩阵
-            att_mat = att_mat.cpu()
-            aug_att_mat = att_mat + residual_att    # 12 * 197 * 197
-            aug_att_mat = aug_att_mat / aug_att_mat.sum(dim=-1).unsqueeze(-1)   # 12 * 197 * 197
-            # Recursively multiply the weight matrices
-            joint_attentions = torch.zeros(aug_att_mat.size())  # 12 * 197 * 197 零矩阵
-            joint_attentions[0] = aug_att_mat[0]    # 联合注意力矩阵第一个维度=vit第一个block的注意力权重矩阵
-            for n in range(1, aug_att_mat.size(0)):         # 1-11
-                # joint第一个block = att第一个block * joint第零个block  ，就是迭代地累乘权重
-                joint_attentions[n] = torch.matmul(aug_att_mat[n], joint_attentions[n - 1])
-            # Attention from the output token to the input space.
-            v = joint_attentions[-1]        # 取累乘12次的权重矩阵   197 * 197
-            grid_size = int(np.sqrt(aug_att_mat.size(-1)))      # 14
-            mask = v[0, 1:].reshape(grid_size, grid_size).detach().numpy()
-            mask = cv2.resize(mask / mask.max(), (w, h))    # [..., np.newaxis]
+            confmat.update(seg_labels.flatten(), seg_obj.flatten())
 
-            # a = []
-            # b = a[10]
-            # result = (mask * img).astype("uint8")     # 可视化
-            # attention map---------------------------------------------------------------------------------------------
+            seg_obj_save.save("./validate_seg_pred/" + name[0] + ".png")
 
-            # cam-------------------------------------------------------------------------------------------------------
-            # # 将20个类别的14*14cam插值回原图大小
-            # cam_label = torch.nn.functional.interpolate(cams_hw, size=(h, w), mode='bilinear', align_corners=False)
-            # # 设置阈值，将每个类的最大激活区域找出来，其他区域置0
-            # high_threshold = 0.916
-            # # print(cam_label[0][0])
-            # cam_label[cam_label < high_threshold] = 0
-            # # 添加背景类
-            # bg_label = torch.full((b, 1, h, w), 1e-5, device=device)
-            # # 整合背景类与目标类
-            # cam_bg_obj = torch.cat((bg_label, cam_label), dim=1)
-            # # cam生成的分割预测
-            # cam_segPred = torch.argmax(cam_bg_obj, dim=1)
-            # # 计算mIOU
-            # confmat.update(seg_labels.flatten(), cam_segPred.flatten())
-            # cur_step_mean_IOU = confmat.get_mIOU()
-            # validate_IOU.append(cur_step_mean_IOU)
-            # # 生成cam图用于保存
-            # # 思路：20张cam图先取max，再归一化生成  |  先归一化再取max
-            # cam_show, cam_indices = cam_show.max(dim=1)
-            # cam_show = cam_show.squeeze(0)
-            # cam_normed = cam_norm(cam_show)     # 归一化
-            # oriImgpath = oriImgFolderpath+str(name[0])+'.jpg'
-            # img = cv2.imread(oriImgpath)
-            # height, width, _ = img.shape
-            # # 生成可视化热力图
-            # heatmap = cv2.applyColorMap(cv2.resize(cam_normed, (width, height)), cv2.COLORMAP_JET)
-            # result = heatmap * 0.3 + img * 0.5
-            # save_cam_path = validate_cam_path+str(name[0])+'_cam.jpg'
-            # cv2.imwrite(save_cam_path, result)
-            # cam-------------------------------------------------------------------------------------------------------
-
-            # 根据mask生成pred_seg
-            high_threshold = 0.4
-            # print(type(mask))
-
-            # print(name)
-            # print(mask)
-            mask[mask < high_threshold] = 0
-            mask[mask >= high_threshold] = max_pred_cls+1
-            # mask = mask.to(device)
-            att_segPred = torch.as_tensor(mask).to(device)
-            # print(att_segPred.dtype)
-            att_segPred = att_segPred.int()
-            # 计算mIOU
-            confmat.update(seg_labels.flatten(), att_segPred.flatten())
-            cur_step_mean_IOU = confmat.get_mIOU()
-            validate_IOU.append(cur_step_mean_IOU)
-
-            # 生成seg_label图片用于保存
-            pseudo_res = torch.as_tensor(att_segPred, dtype=torch.uint8)
-            toimg = transforms.ToPILImage()
-            mask = toimg(pseudo_res)
-            mask.putpalette(pallette)
-            save_name = seg_res_path+str(name[0])+"_validate_seg_result.png"
-            mask.save(save_name)
-
-            data_loader.desc = "[test step {}] cur_step_mAP: {:.3f} all_step_mAP: {:.3f} cur_step_mean_iou:{:.3f} "\
+            data_loader.desc = "[test step {}] cur_step_mAP: {:.3f} all_step_mAP: {:.3f}"\
                 .format(step,
                         mean_ap,
                         mean_ap_all,
-                        cur_step_mean_IOU)
-        iou_sum = 0.0
-        for item in validate_IOU:
-            iou_sum += item
-        validate_mean_IOU = iou_sum / len(validate_IOU)
-        print(f'validate_mean_IOU: {validate_mean_IOU}')
+                        )
+        print(confmat)
 
     # write into txt
     with open(val_log_txt, "a") as f:

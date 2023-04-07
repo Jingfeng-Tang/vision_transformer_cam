@@ -74,7 +74,7 @@ def main(args):
                                     transform=data_transform["train"],
                                     seg_label_flag=False)
 
-    val_dataset = VOC12ClsDataset(img_name_list_path=args.train_img_name_path,
+    val_dataset = VOC12ClsDataset(img_name_list_path=args.val_img_name_path,
                                   voc12_root=args.dataset_path,
                                   transform=data_transform["val"],
                                   seg_label_flag=True)
@@ -163,7 +163,7 @@ def main(args):
                                                epoch=epoch)
 
         # validate
-        mAP_multiple_class_label = evaluate(model=model, data_loader=val_loader, device=device, epoch=epoch, num_classes=args.num_classes)
+        mAP_196patch, mAP_16patch = evaluate(model=model, data_loader=val_loader, device=device, epoch=epoch, num_classes=args.num_classes)
 
         lrate_scheduler.step(epoch)
 
@@ -172,7 +172,7 @@ def main(args):
             tags = ["train_loss", "f1_score", "mAP_multiple_class_label", "learning_rate"]
             tb_writer.add_scalar(tags[0], train_loss, epoch)
             # tb_writer.add_scalar(tags[1], f1_score, epoch)
-            tb_writer.add_scalar(tags[2], mAP_multiple_class_label, epoch)
+            tb_writer.add_scalar(tags[2], mAP_196patch, epoch)
             tb_writer.add_scalar(tags[3], optimizer.param_groups[0]["lr"], epoch)
 
             # write into txt
@@ -181,7 +181,8 @@ def main(args):
                 train_and_validate_log = f"[epoch: {epoch}]\n" \
                                          f"train_loss: {train_loss:.3f}     " \
                                          f"f1_score: {f1_score:.5f}     " \
-                                         f"mAP_multiple_class_label: {mAP_multiple_class_label:.5f}     " \
+                                         f"val_mAP_196patch: {mAP_196patch:.5f}     " \
+                                         f"val_mAP_16patch: {mAP_16patch:.5f}     " \
                                          f"lr: {optimizer.param_groups[0]['lr']:.6f}\n"
                 f.write(train_and_validate_log + "\n\n")
 
@@ -199,12 +200,12 @@ if __name__ == '__main__':
     # 模型参数
     parser.add_argument('--model_name', type=str, default='vit_base', required=False, help='create model name')
     parser.add_argument('--num_classes', type=int, default=20, required=False)
-    # parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/jx_vit_base_patch16_224_in21k-e5005f0a.pth',
-    #                     required=False,
-    #                     help='initial weights path, set to null character if you do not want to load weights')
-    parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/weights_head1/2023-04-05-cur_ep78-bestloss.pth',
+    parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/jx_vit_base_patch16_224_in21k-e5005f0a.pth',
                         required=False,
                         help='initial weights path, set to null character if you do not want to load weights')
+    # parser.add_argument('--weights', type=str, default='/data/c425/tjf/vit/weights_head1/2023-04-05-cur_ep78-bestloss.pth',
+    #                     required=False,
+    #                     help='initial weights path, set to null character if you do not want to load weights')
     parser.add_argument('--freeze_layers', type=bool, default=False, required=False, help='F:freeze weight')
     # 训练参数
     parser.add_argument('--epochs', type=int, default=1000, required=False)
